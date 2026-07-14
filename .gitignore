@@ -1,0 +1,23 @@
+node_modules/
+.next/
+dist/
+coverage/
+playwright-report/
+test-results/
+artifacts/
+.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.log
+*.pem
+*.key
+
+.env
+.env.*
+!.env.example
+
+# 该需求文件按用户要求包含本地数据库凭证，禁止进入 Git。
+开发Promot.md
+
