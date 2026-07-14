@@ -1,0 +1,36 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@ai-worklog/contracts": [
+        "../../packages/contracts/src/index.ts"
+      ],
+      "@ai-worklog/db": [
+        "../../packages/db/src/index.ts"
+      ],
+      "@ai-worklog/db/client": [
+        "../../packages/db/src/client.ts"
+      ],
+      "@ai-worklog/server": [
+        "../../packages/server/src/index.ts"
+      ],
+      "@ai-worklog/sync": [
+        "../../packages/sync/src/index.ts"
+      ]
+    },
+    "skipLibCheck": true
+  },
+  "include": [
+    "next-env.d.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
