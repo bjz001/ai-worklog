@@ -222,3 +222,13 @@ export interface SyncResponse {
     runs: SyncRunView[];
   };
 }
+
+export interface PrivacyResponse {
+  data: {
+    retentionDays: number | null;
+    redactionVersion: string;
+    rawContentStored: boolean;
+    exportReady: boolean;
+    pendingDeletionCount: number;
+  };
+}
