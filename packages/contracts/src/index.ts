@@ -74,3 +74,151 @@ export type SyncBatchRequest = z.infer<typeof SyncBatchRequestSchema>;
 export type SyncEvent = z.infer<typeof SyncEventSchema>;
 export type SyncBatchResult = z.infer<typeof SyncBatchResultSchema>;
 export type ApiError = z.infer<typeof ApiErrorSchema>;
+
+export const DeviceStatusSchema = z.enum([
+  "NOT_CONFIGURED",
+  "WAITING",
+  "SYNCING",
+  "SUCCESS",
+  "PARTIAL",
+  "OFFLINE",
+  "FAILED"
+]);
+
+export const DeviceViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  os: z.enum(["MACOS", "WINDOWS", "OTHER"]),
+  status: DeviceStatusSchema,
+  lastSeenAt: z.string().nullable(),
+  lastSyncAt: z.string().nullable(),
+  promptCount: z.number().int().nonnegative()
+});
+
+export const ProjectViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  canonicalKey: z.string(),
+  assignmentReason: z.string(),
+  promptCount: z.number().int().nonnegative(),
+  deviceCount: z.number().int().nonnegative(),
+  lastActivityAt: z.string().nullable(),
+  recentPrompt: z.string().nullable()
+});
+
+export const EvidenceViewSchema = z.object({
+  id: z.string(),
+  excerpt: z.string(),
+  projectName: z.string(),
+  occurredAt: z.string()
+});
+
+export const SummaryViewSchema = z.object({
+  id: z.string(),
+  workDate: z.string(),
+  status: z.enum(["complete", "partial"]),
+  highlights: z.array(
+    z.object({ text: z.string(), evidenceIds: z.array(z.string()) })
+  ),
+  projectProgress: z.array(
+    z.object({ text: z.string(), evidenceIds: z.array(z.string()) })
+  ),
+  completenessNote: z.string(),
+  evidence: z.array(EvidenceViewSchema)
+});
+
+export const PromptViewSchema = z.object({
+  id: z.string(),
+  content: z.string(),
+  resultExcerpt: z.string().nullable(),
+  projectId: z.string().nullable(),
+  projectName: z.string(),
+  deviceId: z.string(),
+  deviceName: z.string(),
+  sourceType: z.enum(["CODEX", "CLAUDE_CODE"]),
+  occurredAt: z.string(),
+  workDate: z.string(),
+  tags: z.array(z.string()),
+  isFavorite: z.boolean()
+});
+
+export const CalendarDayViewSchema = z.object({
+  date: z.string(),
+  promptCount: z.number().int().nonnegative(),
+  projectCount: z.number().int().nonnegative(),
+  summaryStatus: z.enum(["complete", "partial", "missing"]),
+  hasSyncError: z.boolean()
+});
+
+export const SkillCandidateViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  status: z.enum(["candidate", "ignored", "accepted"]),
+  evidenceIds: z.array(z.string()),
+  evidenceCount: z.number().int().nonnegative(),
+  diff: z.array(
+    z.object({ type: z.enum(["add", "remove", "context"]), text: z.string() })
+  )
+});
+
+export const SyncRunViewSchema = z.object({
+  id: z.string(),
+  deviceId: z.string(),
+  status: z.enum(["SUCCESS", "PARTIAL", "FAILED"]),
+  receivedCount: z.number().int().nonnegative(),
+  insertedCount: z.number().int().nonnegative(),
+  duplicateCount: z.number().int().nonnegative(),
+  startedAt: z.string(),
+  completedAt: z.string().nullable(),
+  errorCode: z.string().nullable()
+});
+
+export type DeviceView = z.infer<typeof DeviceViewSchema>;
+export type ProjectView = z.infer<typeof ProjectViewSchema>;
+export type EvidenceView = z.infer<typeof EvidenceViewSchema>;
+export type SummaryView = z.infer<typeof SummaryViewSchema>;
+export type PromptView = z.infer<typeof PromptViewSchema>;
+export type CalendarDayView = z.infer<typeof CalendarDayViewSchema>;
+export type SkillCandidateView = z.infer<typeof SkillCandidateViewSchema>;
+export type SyncRunView = z.infer<typeof SyncRunViewSchema>;
+
+export interface DashboardResponse {
+  data: {
+    fixtureMode: boolean;
+    summary: SummaryView | null;
+    devices: DeviceView[];
+    projects: ProjectView[];
+    pendingSkillCount: number;
+  };
+}
+
+export interface ProjectsResponse {
+  data: ProjectView[];
+}
+
+export interface PromptsResponse {
+  data: PromptView[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
+}
+
+export interface CalendarResponse {
+  data: CalendarDayView[];
+  month: string;
+}
+
+export interface SkillsResponse {
+  data: SkillCandidateView[];
+}
+
+export interface SyncResponse {
+  data: {
+    devices: DeviceView[];
+    runs: SyncRunView[];
+  };
+}
