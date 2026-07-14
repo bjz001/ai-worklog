@@ -1,0 +1,25 @@
+{
+  "name": "@ai-worklog/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run --root ../.. packages/server/src",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ai-worklog/contracts": "*",
+    "@ai-worklog/core": "*",
+    "@ai-worklog/db": "*",
+    "@ai-worklog/insights": "*",
+    "@ai-worklog/sync": "*",
+    "mysql2": "^3.14.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}
