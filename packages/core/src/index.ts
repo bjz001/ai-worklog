@@ -54,10 +54,26 @@ export function normalizeGitRemote(remote: string): string | null {
   }
 }
 
+export function repositoryRootName(localPath: string): string | null {
+  const normalized = localPath.trim().replace(/[\\/]+$/u, "");
+  const name = normalized.split(/[\\/]/u).filter(Boolean).at(-1)?.trim();
+  if (!name || name === "." || name === "..") return null;
+  return name.slice(0, 255);
+}
+
 const REDACTED = "[REDACTED]";
 
 export function redactSensitiveText(input: string): string {
   return input
+    .replace(
+      /\b(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b/g,
+      REDACTED
+    )
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, REDACTED)
+    .replace(
+      /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g,
+      REDACTED
+    )
     .replace(
       /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/gi,
       REDACTED
@@ -69,12 +85,20 @@ export function redactSensitiveText(input: string): string {
       `$1${REDACTED}@`
     )
     .replace(
+      /\b(((?:(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})[:\s]+(?:3306|5432|1433)\s+(?:root|postgres|sa|[A-Za-z][A-Za-z0-9_.-]{0,63}))\s+)[^\s,;]+/gi,
+      `$1${REDACTED}`
+    )
+    .replace(
       /\b(Cookie|Set-Cookie)\s*:\s*[^\r\n]+/gi,
       (_match, label: string) => `${label}: ${REDACTED}`
     )
     .replace(
       /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret)\s*[:=]\s*["']?[^\s,"';]+["']?/gi,
       (_match, label: string) => `${label}=${REDACTED}`
+    )
+    .replace(
+      /((?:密码|口令|令牌|密钥)\s*[:：=]\s*)["']?[^\s,"’';，；]+["']?/gu,
+      (_match, label: string) => `${label}${REDACTED}`
     );
 }
 

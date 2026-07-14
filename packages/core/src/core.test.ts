@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildEventId,
   normalizeGitRemote,
+  repositoryRootName,
   redactSensitiveText
 } from "./index";
 
@@ -22,6 +23,31 @@ describe("redactSensitiveText", () => {
     expect(output).not.toContain("abc123secret");
     expect(output.match(/\[REDACTED\]/g)?.length).toBeGreaterThanOrEqual(4);
   });
+
+  it("redacts common provider and JWT token shapes without a key label", () => {
+    const secrets = [
+      "ghp_1234567890abcdefghijklmnopqrstuvwxyzAB",
+      "AKIAIOSFODNN7EXAMPLE",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123456"
+    ];
+    const output = redactSensitiveText(secrets.join("\n"));
+
+    for (const secret of secrets) expect(output).not.toContain(secret);
+  });
+
+  it("redacts bare database credential tuples and Chinese secret labels", () => {
+    const databasePassword = "fixtureDbPassword987";
+    const labeledSecret = "fixtureChineseSecret654";
+    const output = redactSensitiveText([
+      `10.20.30.40 3306 root ${databasePassword}`,
+      `数据库密码：${labeledSecret}`
+    ].join("\n"));
+
+    expect(output).not.toContain(databasePassword);
+    expect(output).not.toContain(labeledSecret);
+    expect(output).toContain("10.20.30.40 3306 root [REDACTED]");
+    expect(output).toContain("数据库密码：[REDACTED]");
+  });
 });
 
 describe("normalizeGitRemote", () => {
@@ -32,6 +58,17 @@ describe("normalizeGitRemote", () => {
     expect(
       normalizeGitRemote("https://token@github.com/Acme/Worklog.git?x=1")
     ).toBe("github.com/acme/worklog");
+  });
+});
+
+describe("repositoryRootName", () => {
+  it("derives the same credential-free fallback from Windows and macOS paths", () => {
+    expect(repositoryRootName("C:\\Users\\demo\\work\\ai-worklog\\")).toBe(
+      "ai-worklog"
+    );
+    expect(repositoryRootName("/Users/demo/work/ai-worklog/")).toBe(
+      "ai-worklog"
+    );
   });
 });
 
@@ -65,4 +102,3 @@ describe("buildEventId", () => {
     );
   });
 });
-

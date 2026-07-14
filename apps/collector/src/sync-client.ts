@@ -8,6 +8,26 @@ export interface SyncResult {
   failed: number;
 }
 
+class ServerRateLimitError extends Error {
+  constructor(readonly retryAfterMs: number) {
+    super("HTTP_429");
+    this.name = "ServerRateLimitError";
+  }
+}
+
+function retryAfterMilliseconds(response: Response): number {
+  const value = response.headers.get("retry-after")?.trim() ?? "";
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return Math.min(Math.ceil(seconds * 1_000), 5 * 60_000);
+  }
+  const date = Date.parse(value);
+  if (Number.isFinite(date)) {
+    return Math.min(Math.max(1_000, date - Date.now()), 5 * 60_000);
+  }
+  return 60_000;
+}
+
 function validatedEndpoint(endpoint: string): URL {
   const url = new URL(endpoint);
   const isLocalHttp = url.protocol === "http:"
@@ -76,7 +96,13 @@ async function uploadBatch(options: {
     signal: AbortSignal.timeout(options.timeoutMs)
   });
 
-  if (!response.ok) throw new Error(`HTTP_${response.status}`);
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status === 429) {
+      throw new ServerRateLimitError(retryAfterMilliseconds(response));
+    }
+    throw new Error(`HTTP_${response.status}`);
+  }
   const responseText = await readLimitedResponse(response, 64 * 1024);
 
   let parsed: unknown;
@@ -96,27 +122,44 @@ export async function syncPending(options: {
   token: string;
   limit?: number;
   timeoutMs?: number;
+  maxRateLimitRetries?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
 }): Promise<SyncResult> {
   if (!options.token) throw new Error("Device token is required");
   const endpoint = validatedEndpoint(options.endpoint);
   const batches = options.outbox.listPending(options.limit ?? 20);
   const result: SyncResult = { attempted: 0, acked: 0, failed: 0 };
+  const sleep = options.sleep ?? ((milliseconds: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
 
   for (const batch of batches) {
     result.attempted += 1;
     options.outbox.recordAttempt(batch.batchId);
-    try {
-      await uploadBatch({
-        batch,
-        endpoint,
-        token: options.token,
-        timeoutMs: options.timeoutMs ?? 15_000
-      });
-      options.outbox.markAcked(batch.batchId);
-      result.acked += 1;
-    } catch (error) {
-      options.outbox.recordFailure(batch.batchId, failureCode(error));
-      result.failed += 1;
+    let rateLimitRetries = 0;
+    while (true) {
+      try {
+        await uploadBatch({
+          batch,
+          endpoint,
+          token: options.token,
+          timeoutMs: options.timeoutMs ?? 15_000
+        });
+        options.outbox.markAcked(batch.batchId);
+        result.acked += 1;
+        break;
+      } catch (error) {
+        if (
+          error instanceof ServerRateLimitError &&
+          rateLimitRetries < (options.maxRateLimitRetries ?? 20)
+        ) {
+          rateLimitRetries += 1;
+          await sleep(error.retryAfterMs);
+          continue;
+        }
+        options.outbox.recordFailure(batch.batchId, failureCode(error));
+        result.failed += 1;
+        break;
+      }
     }
   }
 

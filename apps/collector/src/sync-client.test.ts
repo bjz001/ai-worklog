@@ -153,4 +153,66 @@ describe("syncPending", () => {
       );
     }
   });
+
+  it("honors Retry-After and continues the same batch after rate limiting", async () => {
+    const outbox = new Outbox(join(mkdtempSync(join(tmpdir(), "collector-sync-")), "collector.sqlite"));
+    openOutboxes.push(outbox);
+    const connector = new CodexConnector({
+      accountId: "account-1",
+      deviceId: "mac-device",
+      sourceInstanceId: "mac-codex"
+    });
+    const prepared = await prepareFile({
+      connector,
+      outbox,
+      filePath: resolve(fixturesRoot, "macos/session.jsonl")
+    });
+    let requestCount = 0;
+    const server = createServer((_request, response) => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        response.writeHead(429, { "retry-after": "2" });
+        response.end();
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        batchId: prepared.batchId,
+        status: "COMMITTED",
+        receivedCount: 2,
+        insertedCount: 2,
+        duplicateCount: 0,
+        changedCount: 0,
+        committedAt: "2026-07-14T15:00:00.000Z"
+      }));
+    });
+    await new Promise<void>((resolveListen) =>
+      server.listen(0, "127.0.0.1", resolveListen)
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server did not bind");
+    }
+    const sleeps: number[] = [];
+
+    try {
+      const result = await syncPending({
+        outbox,
+        endpoint: `http://127.0.0.1:${address.port}/v1/sync/batches`,
+        token: "fixture-device-token",
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+        }
+      });
+
+      expect(result).toEqual({ attempted: 1, acked: 1, failed: 0 });
+      expect(sleeps).toEqual([2_000]);
+      expect(requestCount).toBe(2);
+      expect(outbox.status().acked).toBe(1);
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => error ? rejectClose(error) : resolveClose())
+      );
+    }
+  });
 });

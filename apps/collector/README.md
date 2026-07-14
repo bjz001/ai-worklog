@@ -1,6 +1,6 @@
 # AI Worklog Collector
 
-本地只读采集 Codex JSONL，将脱敏后的事件写入 SQLite Outbox，再通过同步 API 上传。数据库和标准输出均不会保存或打印设备令牌。
+本地只读采集 Codex 或 Claude Code JSONL，将脱敏后的事件写入 SQLite Outbox，再通过同步 API 上传。数据库和标准输出均不会保存或打印设备令牌。
 
 ## 命令
 
@@ -16,9 +16,18 @@ npm run collector -- run-fixtures
 - `COLLECTOR_DB_PATH`：本地 SQLite 路径；未设置时使用用户目录下的 `.ai-worklog/collector.sqlite`。
 - `AI_WORKLOG_ACCOUNT_ID`
 - `AI_WORKLOG_DEVICE_ID`
+- `AI_WORKLOG_SOURCE_TYPE`：`CODEX` 或 `CLAUDE_CODE`；未设置时默认为 `CODEX`。
+- `AI_WORKLOG_PATH_HMAC_KEY`：推荐设置，用于不可逆标识本地项目路径。
+
+Codex 数据源需要：
+
 - `CODEX_SOURCE_INSTANCE_ID`
 - `CODEX_SOURCE_PATH`：明确授权的 `.jsonl` 文件或目录。
-- `AI_WORKLOG_PATH_HMAC_KEY`：推荐设置，用于不可逆标识本地项目路径。
+
+Claude Code 数据源需要：
+
+- `CLAUDE_CODE_SOURCE_INSTANCE_ID`
+- `CLAUDE_CODE_SOURCE_PATH`：明确授权的 `.jsonl` 文件或目录。
 
 `sync` 额外需要：
 

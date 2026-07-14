@@ -1,4 +1,5 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import { Outbox } from "./outbox.js";
 import { parseCommand, runCli } from "./cli.js";
 
 const fixturesRoot = fileURLToPath(new URL("../../../fixtures/codex/", import.meta.url));
+const claudeFixturesRoot = fileURLToPath(new URL("../../../fixtures/claude/", import.meta.url));
 
 describe("collector CLI", () => {
   it.each(["prepare", "sync", "status", "run-fixtures"] as const)(
@@ -55,5 +57,146 @@ describe("collector CLI", () => {
     expect(output).toEqual([
       JSON.stringify({ command: "status", pending: 0, acked: 0, total: 0 })
     ]);
+  });
+
+  it("selects the Claude Code connector for prepare through AI_WORKLOG_SOURCE_TYPE", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
+    const databasePath = join(directory, "collector.sqlite");
+    const output: string[] = [];
+
+    await runCli(["prepare"], {
+      env: {
+        COLLECTOR_DB_PATH: databasePath,
+        AI_WORKLOG_ACCOUNT_ID: "account-1",
+        AI_WORKLOG_DEVICE_ID: "windows-device",
+        AI_WORKLOG_SOURCE_TYPE: "CLAUDE_CODE",
+        CLAUDE_CODE_SOURCE_INSTANCE_ID: "windows-claude",
+        CLAUDE_CODE_SOURCE_PATH: resolve(claudeFixturesRoot, "windows/session.jsonl")
+      },
+      write: (line) => output.push(line)
+    });
+
+    const outbox = new Outbox(databasePath);
+    const payload = outbox.listPending(10)[0]?.payloadJson ?? "";
+    expect(outbox.status()).toEqual({ pending: 1, acked: 0, total: 1 });
+    outbox.close();
+    expect(payload).toContain('"type":"CLAUDE_CODE"');
+    expect(payload).toContain('"parserVersion":"claude-code-jsonl-v2"');
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
+      command: "prepare",
+      scanned: 1,
+      inserted: 1,
+      events: 2,
+      sourceType: "CLAUDE_CODE"
+    });
+  });
+
+  it("keeps Codex as the default prepare connector", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
+    const databasePath = join(directory, "collector.sqlite");
+    const output: string[] = [];
+
+    await runCli(["prepare"], {
+      env: {
+        COLLECTOR_DB_PATH: databasePath,
+        AI_WORKLOG_ACCOUNT_ID: "account-1",
+        AI_WORKLOG_DEVICE_ID: "windows-device",
+        CODEX_SOURCE_INSTANCE_ID: "windows-codex",
+        CODEX_SOURCE_PATH: resolve(fixturesRoot, "windows/session.jsonl")
+      },
+      write: (line) => output.push(line)
+    });
+
+    const outbox = new Outbox(databasePath);
+    const payload = outbox.listPending(10)[0]?.payloadJson ?? "";
+    outbox.close();
+    expect(payload).toContain('"type":"CODEX"');
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({ sourceType: "CODEX" });
+  });
+
+  it("fails the sync command when a batch remains unacknowledged", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
+    const databasePath = join(directory, "collector.sqlite");
+    const output: string[] = [];
+    const sharedEnvironment = {
+      COLLECTOR_DB_PATH: databasePath,
+      AI_WORKLOG_ACCOUNT_ID: "account-1",
+      AI_WORKLOG_DEVICE_ID: "windows-device",
+      CODEX_SOURCE_INSTANCE_ID: "windows-codex",
+      CODEX_SOURCE_PATH: resolve(fixturesRoot, "windows/session.jsonl")
+    };
+    await runCli(["prepare"], {
+      env: sharedEnvironment,
+      write: () => undefined
+    });
+
+    const server = createServer((_request, response) => {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { code: "UNAVAILABLE" } }));
+    });
+    await new Promise<void>((resolveListen) =>
+      server.listen(0, "127.0.0.1", resolveListen)
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server did not bind");
+    }
+
+    try {
+      await expect(runCli(["sync"], {
+        env: {
+          ...sharedEnvironment,
+          AI_WORKLOG_SYNC_URL: `http://127.0.0.1:${address.port}/api/v1/sync/batches`,
+          AI_WORKLOG_DEVICE_TOKEN: "fixture-device-token"
+        },
+        write: (line) => output.push(line)
+      })).rejects.toThrow("SYNC_INCOMPLETE");
+
+      expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
+        command: "sync",
+        attempted: 1,
+        acked: 0,
+        failed: 1,
+        remainingPending: 1
+      });
+      expect(output.join("\n")).not.toContain("fixture-device-token");
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => error ? rejectClose(error) : resolveClose())
+      );
+    }
+  });
+
+  it("queues healthy files while reporting an isolated malformed file", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
+    const databasePath = join(directory, "collector.sqlite");
+    writeFileSync(join(directory, "broken.jsonl"), "{not-json}\n");
+    writeFileSync(
+      join(directory, "healthy.jsonl"),
+      readFileSync(resolve(fixturesRoot, "windows/session.jsonl"), "utf8")
+    );
+    const output: string[] = [];
+
+    await expect(runCli(["prepare"], {
+      env: {
+        COLLECTOR_DB_PATH: databasePath,
+        AI_WORKLOG_ACCOUNT_ID: "account-1",
+        AI_WORKLOG_DEVICE_ID: "windows-device",
+        CODEX_SOURCE_INSTANCE_ID: "windows-codex",
+        CODEX_SOURCE_PATH: directory
+      },
+      write: (line) => output.push(line)
+    })).rejects.toThrow("PREPARE_PARTIAL");
+
+    const outbox = new Outbox(databasePath);
+    expect(outbox.status().pending).toBe(1);
+    outbox.close();
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
+      scanned: 2,
+      inserted: 1,
+      skippedFiles: 0,
+      failedFiles: 1
+    });
+    expect(output.join("\n")).not.toContain("broken.jsonl");
   });
 });

@@ -1,10 +1,12 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ClaudeCodeConnector } from "./claude-connector.js";
 import { CodexConnector } from "./codex-connector.js";
 import { Outbox } from "./outbox.js";
 import { prepareFile } from "./prepare.js";
-import { discoverCodexFiles } from "./source-files.js";
+import type { PromptConnector, PromptSourceType } from "./prompt-connector.js";
+import { discoverPromptFiles } from "./source-files.js";
 import { syncPending } from "./sync-client.js";
 
 export const COMMANDS = ["prepare", "sync", "status", "run-fixtures"] as const;
@@ -27,6 +29,43 @@ function databasePath(env: Record<string, string | undefined>): string {
     || join(homedir(), ".ai-worklog", "collector.sqlite");
 }
 
+function configuredSourceType(env: Record<string, string | undefined>): PromptSourceType {
+  const value = env.AI_WORKLOG_SOURCE_TYPE?.trim().toUpperCase() || "CODEX";
+  if (value === "CODEX" || value === "CLAUDE_CODE") return value;
+  throw new Error("Unsupported AI_WORKLOG_SOURCE_TYPE; expected CODEX or CLAUDE_CODE");
+}
+
+function createConfiguredConnector(
+  env: Record<string, string | undefined>
+): { connector: PromptConnector; sourcePath: string; sourceLabel: string } {
+  const sourceType = configuredSourceType(env);
+  const shared = {
+    accountId: requiredEnv(env, "AI_WORKLOG_ACCOUNT_ID"),
+    deviceId: requiredEnv(env, "AI_WORKLOG_DEVICE_ID"),
+    pathHmacKey: env.AI_WORKLOG_PATH_HMAC_KEY
+  };
+
+  if (sourceType === "CLAUDE_CODE") {
+    return {
+      connector: new ClaudeCodeConnector({
+        ...shared,
+        sourceInstanceId: requiredEnv(env, "CLAUDE_CODE_SOURCE_INSTANCE_ID")
+      }),
+      sourcePath: requiredEnv(env, "CLAUDE_CODE_SOURCE_PATH"),
+      sourceLabel: "Claude Code"
+    };
+  }
+
+  return {
+    connector: new CodexConnector({
+      ...shared,
+      sourceInstanceId: requiredEnv(env, "CODEX_SOURCE_INSTANCE_ID")
+    }),
+    sourcePath: requiredEnv(env, "CODEX_SOURCE_PATH"),
+    sourceLabel: "Codex"
+  };
+}
+
 export function parseCommand(argv: string[]): { command: CollectorCommand } {
   const command = argv[0];
   if (COMMANDS.includes(command as CollectorCommand)) {
@@ -42,21 +81,32 @@ async function runPrepare(
 ): Promise<void> {
   const outbox = new Outbox(databasePath(env));
   try {
-    const connector = new CodexConnector({
-      accountId: requiredEnv(env, "AI_WORKLOG_ACCOUNT_ID"),
-      deviceId: requiredEnv(env, "AI_WORKLOG_DEVICE_ID"),
-      sourceInstanceId: requiredEnv(env, "CODEX_SOURCE_INSTANCE_ID"),
-      pathHmacKey: env.AI_WORKLOG_PATH_HMAC_KEY
-    });
-    const files = await discoverCodexFiles(requiredEnv(env, "CODEX_SOURCE_PATH"));
+    const { connector, sourcePath, sourceLabel } = createConfiguredConnector(env);
+    const files = await discoverPromptFiles(sourcePath, sourceLabel);
     let inserted = 0;
     let events = 0;
+    let skippedFiles = 0;
+    let failedFiles = 0;
     for (const filePath of files) {
-      const result = await prepareFile({ connector, outbox, filePath });
-      inserted += result.insertedCount;
-      events += result.eventCount;
+      try {
+        const result = await prepareFile({ connector, outbox, filePath });
+        inserted += result.insertedCount;
+        events += result.eventCount;
+        if (result.eventCount === 0) skippedFiles += 1;
+      } catch {
+        failedFiles += 1;
+      }
     }
-    write(JSON.stringify({ command: "prepare", scanned: files.length, inserted, events }));
+    write(JSON.stringify({
+      command: "prepare",
+      sourceType: connector.sourceType,
+      scanned: files.length,
+      inserted,
+      events,
+      skippedFiles,
+      failedFiles
+    }));
+    if (failedFiles > 0) throw new Error("PREPARE_PARTIAL");
   } finally {
     outbox.close();
   }
@@ -68,12 +118,31 @@ async function runSync(
 ): Promise<void> {
   const outbox = new Outbox(databasePath(env));
   try {
-    const result = await syncPending({
-      outbox,
-      endpoint: requiredEnv(env, "AI_WORKLOG_SYNC_URL"),
-      token: requiredEnv(env, "AI_WORKLOG_DEVICE_TOKEN")
-    });
-    write(JSON.stringify({ command: "sync", ...result }));
+    const endpoint = requiredEnv(env, "AI_WORKLOG_SYNC_URL");
+    const token = requiredEnv(env, "AI_WORKLOG_DEVICE_TOKEN");
+    const result = { attempted: 0, acked: 0, failed: 0 };
+
+    // Drain bounded pages so a normal backlog is cleared in one scheduled run.
+    // Stop after the first failed page to preserve Outbox retry semantics without
+    // immediately hammering an unavailable server.
+    for (let page = 0; page < 10; page += 1) {
+      const pageResult = await syncPending({
+        outbox,
+        endpoint,
+        token,
+        limit: 100
+      });
+      result.attempted += pageResult.attempted;
+      result.acked += pageResult.acked;
+      result.failed += pageResult.failed;
+      if (pageResult.failed > 0 || pageResult.attempted === 0) break;
+    }
+
+    const remainingPending = outbox.status().pending;
+    write(JSON.stringify({ command: "sync", ...result, remainingPending }));
+    if (result.failed > 0 || remainingPending > 0) {
+      throw new Error("SYNC_INCOMPLETE");
+    }
   } finally {
     outbox.close();
   }

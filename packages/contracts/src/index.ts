@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const MAX_SYNC_BATCH_BODY_BYTES = 2 * 1024 * 1024;
+
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const DateTimeSchema = z.string().datetime({ offset: true });
 

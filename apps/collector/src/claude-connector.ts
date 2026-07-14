@@ -11,8 +11,9 @@ import { readJsonlRecords, type JsonRecord } from "./jsonl-reader.js";
 import { resolveLocalProjectIdentity } from "./git-project.js";
 
 const MAX_CONTENT_LENGTH = 131_072;
+const MAX_METADATA_LENGTH = 512;
 
-interface CodexConnectorOptions {
+interface ClaudeCodeConnectorOptions {
   accountId: string;
   deviceId: string;
   sourceInstanceId: string;
@@ -24,9 +25,8 @@ interface SessionMeta {
   cwd?: string;
   sourceTimeZone: string;
   gitRemoteKey?: string;
+  gitBranch?: string;
 }
-
-export type NormalizedCodexSession = NormalizedPromptSession;
 
 function asRecord(value: unknown): JsonRecord | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -34,34 +34,36 @@ function asRecord(value: unknown): JsonRecord | null {
     : null;
 }
 
-function requiredString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`Invalid Codex fixture: ${field} must be a non-empty string`);
-  }
-  return value;
-}
-
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function normalizedTimestamp(value: unknown): string {
-  const raw = requiredString(value, "timestamp");
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const candidate = optionalString(value);
+    if (candidate) return candidate;
+  }
+  return undefined;
+}
+
+function normalizedTimestamp(record: JsonRecord): string {
+  const raw = firstString(record.timestamp, record.createdAt, record.created_at);
+  if (!raw) throw new Error("Invalid Claude Code fixture: timestamp must be a non-empty string");
   const timestamp = new Date(raw);
   if (Number.isNaN(timestamp.getTime())) {
-    throw new Error("Invalid Codex fixture: timestamp is invalid");
+    throw new Error("Invalid Claude Code fixture: timestamp is invalid");
   }
   return timestamp.toISOString();
 }
 
-function extractText(content: unknown): string | null {
+function extractVisibleText(content: unknown): string | null {
   if (typeof content === "string") return content.slice(0, MAX_CONTENT_LENGTH);
   if (!Array.isArray(content)) return null;
 
   const parts = content.flatMap((part) => {
     const record = asRecord(part);
     if (!record || typeof record.text !== "string") return [];
-    if (!["input_text", "output_text", "text"].includes(String(record.type))) return [];
+    if (!["text", "input_text", "output_text"].includes(String(record.type))) return [];
     return [record.text];
   });
 
@@ -69,16 +71,21 @@ function extractText(content: unknown): string | null {
   return parts.join("\n").slice(0, MAX_CONTENT_LENGTH);
 }
 
-export class CodexConnector implements PromptConnector {
-  readonly sourceType = "CODEX" as const;
-  readonly parserVersion = "codex-jsonl-v2";
+function messageRole(record: JsonRecord, message: JsonRecord): "user" | "assistant" | null {
+  const role = firstString(message.role, record.type);
+  return role === "user" || role === "assistant" ? role : null;
+}
+
+export class ClaudeCodeConnector implements PromptConnector {
+  readonly sourceType = "CLAUDE_CODE" as const;
+  readonly parserVersion = "claude-code-jsonl-v2";
   readonly sourceInstanceId: string;
   private readonly accountId: string;
   private readonly deviceId: string;
   private readonly pathHmacKey: string;
   private readonly projectCache = new Map<string, Promise<Awaited<ReturnType<typeof resolveLocalProjectIdentity>>>>();
 
-  constructor(options: CodexConnectorOptions) {
+  constructor(options: ClaudeCodeConnectorOptions) {
     this.accountId = options.accountId;
     this.deviceId = options.deviceId;
     this.sourceInstanceId = options.sourceInstanceId;
@@ -86,7 +93,7 @@ export class CodexConnector implements PromptConnector {
       ?? sha256Hex(`path-key-v1\u001f${options.accountId}\u001f${options.deviceId}`);
   }
 
-  async readFile(filePath: string): Promise<NormalizedCodexSession> {
+  async readFile(filePath: string): Promise<NormalizedPromptSession> {
     const meta = await this.readSessionMeta(filePath);
     const project = meta.cwd
       ? await this.resolveProject(meta.cwd, meta.gitRemoteKey)
@@ -100,24 +107,29 @@ export class CodexConnector implements PromptConnector {
           .digest("hex")
       } : {})
     };
+    const metadata = meta.gitBranch
+      ? { gitBranch: redactSensitiveText(meta.gitBranch).slice(0, MAX_METADATA_LENGTH) }
+      : {};
     const events: SyncEvent[] = [];
     let previousUserEventId: string | undefined;
     // This semantic ordinal is part of the durable v1 event identity. Raw
     // JSONL line numbers must not replace it during parser upgrades.
     let messageIndex = 0;
 
-    for await (const { record } of readJsonlRecords(filePath, "Codex")) {
-      if (!record || record.type !== "response_item") continue;
-      const payload = asRecord(record.payload);
-      if (!payload || payload.type !== "message") continue;
-      if (payload.role !== "user" && payload.role !== "assistant") continue;
-      const content = extractText(payload.content);
+    for await (const { record } of readJsonlRecords(filePath, "Claude Code")) {
+      if (!record || (record.type !== "user" && record.type !== "assistant")) continue;
+      if (record.isSidechain === true) continue;
+      const message = asRecord(record.message);
+      if (!message) continue;
+      const role = messageRole(record, message);
+      if (!role) continue;
+      const content = extractVisibleText(message.content);
       if (!content?.trim()) continue;
       if (messageIndex > 1_000_000) {
-        throw new Error("Codex source exceeds the message index limit");
+        throw new Error("Claude Code source exceeds the message index limit");
       }
 
-      const sourceMessageId = optionalString(payload.id) ?? null;
+      const sourceMessageId = firstString(record.uuid, message.id)?.slice(0, 255) ?? null;
       const eventId = buildEventId({
         accountId: this.accountId,
         deviceId: this.deviceId,
@@ -128,7 +140,7 @@ export class CodexConnector implements PromptConnector {
         messageIndex
       });
       const sanitizedContent = redactSensitiveText(content);
-      const kind = payload.role === "user" ? "USER_PROMPT" as const : "VISIBLE_RESULT" as const;
+      const kind = role === "user" ? "USER_PROMPT" as const : "VISIBLE_RESULT" as const;
 
       events.push({
         eventId,
@@ -139,13 +151,13 @@ export class CodexConnector implements PromptConnector {
         ...(kind === "VISIBLE_RESULT" && previousUserEventId
           ? { replyToEventId: previousUserEventId }
           : {}),
-        occurredAt: normalizedTimestamp(record.timestamp),
+        occurredAt: normalizedTimestamp(record),
         sourceTimeZone: meta.sourceTimeZone,
         sanitizedContent,
         contentHash: sha256Hex(sanitizedContent),
         redactionVersion: "core-v1",
         projectHint,
-        metadata: {}
+        metadata
       });
 
       if (kind === "USER_PROMPT") previousUserEventId = eventId;
@@ -166,22 +178,46 @@ export class CodexConnector implements PromptConnector {
   }
 
   private async readSessionMeta(filePath: string): Promise<SessionMeta> {
-    let payload: JsonRecord | null = null;
-    for await (const { record } of readJsonlRecords(filePath, "Codex")) {
-      if (record?.type !== "session_meta") continue;
-      payload = asRecord(record.payload);
-      break;
+    let sessionId: string | undefined;
+    let cwd: string | undefined;
+    let sourceTimeZone: string | undefined;
+    let rawRemote: string | undefined;
+    let gitBranch: string | undefined;
+    for await (const { record } of readJsonlRecords(filePath, "Claude Code")) {
+      if (!record) continue;
+      sessionId ??= firstString(record.sessionId, record.session_id);
+      cwd ??= firstString(record.cwd, record.workingDirectory);
+      sourceTimeZone ??= firstString(record.sourceTimeZone, record.source_time_zone);
+      gitBranch ??= firstString(record.gitBranch, record.git_branch);
+      if (!rawRemote) {
+        const git = asRecord(record.git);
+        rawRemote = firstString(
+          record.gitRemote,
+          record.gitRemoteUrl,
+          record.repositoryUrl,
+          record.repository_url,
+          git?.repository_url,
+          git?.repositoryUrl,
+          git?.remote_url,
+          git?.remote,
+          git?.url
+        );
+      }
     }
-    if (!payload) throw new Error("Invalid Codex fixture: session_meta is missing");
-    const git = asRecord(payload.git);
-    const rawRemote = optionalString(git?.repository_url);
-    const gitRemoteKey = rawRemote ? normalizeGitRemote(rawRemote) ?? undefined : undefined;
+    if (!sessionId) throw new Error("Invalid Claude Code fixture: sessionId is missing");
+    const gitRemoteKey = rawRemote
+      ? normalizeGitRemote(rawRemote.slice(0, 4_096)) ?? undefined
+      : undefined;
+    if (sessionId.length > 255) {
+      throw new Error("Invalid Claude Code fixture: sessionId exceeds 255 characters");
+    }
 
     return {
-      sessionId: requiredString(payload.id, "session_meta.payload.id"),
-      cwd: optionalString(payload.cwd),
-      sourceTimeZone: optionalString(payload.source_time_zone) ?? "UTC",
-      gitRemoteKey
+      sessionId,
+      cwd,
+      sourceTimeZone: sourceTimeZone?.slice(0, 64) ?? "UTC",
+      gitRemoteKey,
+      gitBranch
     };
   }
 }
