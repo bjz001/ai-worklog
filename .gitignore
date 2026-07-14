@@ -11,6 +11,7 @@ artifacts/
 *.sqlite-wal
 *.db
 *.log
+*.tsbuildinfo
 *.pem
 *.key
 
@@ -20,4 +21,3 @@ artifacts/
 
 # 该需求文件按用户要求包含本地数据库凭证，禁止进入 Git。
 开发Promot.md
-
