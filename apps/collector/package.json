@@ -1,0 +1,23 @@
+{
+  "name": "@ai-worklog/collector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ai-worklog-collector": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "test": "vitest run --root ../.. apps/collector/src",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ai-worklog/contracts": "*",
+    "@ai-worklog/core": "*",
+    "better-sqlite3": "^12.4.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  }
+}
