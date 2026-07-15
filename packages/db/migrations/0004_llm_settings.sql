@@ -1,0 +1,11 @@
+CREATE TABLE `llm_settings` (
+  `account_id` VARCHAR(64) NOT NULL,
+  `provider` ENUM('DEEPSEEK', 'OPENAI_COMPATIBLE') NOT NULL,
+  `base_url` VARCHAR(512) NOT NULL,
+  `model` VARCHAR(128) NOT NULL,
+  `encrypted_api_key` LONGTEXT NOT NULL,
+  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`account_id`),
+  CONSTRAINT `fk_llm_settings_account` FOREIGN KEY (`account_id`) REFERENCES `accounts` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

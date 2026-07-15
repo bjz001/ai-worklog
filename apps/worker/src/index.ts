@@ -7,7 +7,11 @@ import {
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { parseWorkerCommand } from "./command";
-import { workDatesToRefresh } from "./plan";
+import {
+  defaultSummaryJobWorkDates,
+  MAX_BACKFILL_DATES,
+  workDatesToRefresh
+} from "./plan";
 import {
   acknowledgeSummaryJob,
   listSummaryJobs
@@ -55,17 +59,37 @@ async function main(): Promise<void> {
     const { accountId } = parseServerIdentity();
     const pool = getPool();
     const timeZone = await accountTimeZone(pool, accountId);
-    const jobs = await listSummaryJobs({
+    const now = new Date();
+    const requestedPlan = workDatesToRefresh({
+      command,
+      dirtyWorkDates: [],
+      totalDirtyCount: 0,
+      timeZone,
+      now
+    });
+    const filteredWorkDates = command.mode === "backfill"
+      ? undefined
+      : command.mode === "today"
+        ? defaultSummaryJobWorkDates({ timeZone, now })
+        : requestedPlan.workDates;
+    const jobPage = await listSummaryJobs({
       pool,
       accountId,
-      workDate: command.workDate ?? undefined
+      ...(filteredWorkDates ? { workDates: filteredWorkDates } : {}),
+      limit: command.mode === "backfill"
+        ? MAX_BACKFILL_DATES
+        : filteredWorkDates?.length ?? 1
     });
+    const jobs = jobPage.jobs;
     const jobsByDate = new Map(jobs.map((job) => [job.workDate, job]));
-    const workDates = workDatesToRefresh({
-      explicitWorkDate: command.workDate,
+    const plan = workDatesToRefresh({
+      command,
       dirtyWorkDates: jobs.map((job) => job.workDate),
-      timeZone
+      totalDirtyCount: jobPage.totalCount,
+      timeZone,
+      now
     });
+    const { workDates } = plan;
     const results = [];
     const failures: Array<{ workDate: string; code: string }> = [];
     let acknowledgedCount = 0;
@@ -83,9 +107,16 @@ async function main(): Promise<void> {
         failures.push({ workDate, code: safeCode(error) });
       }
     }
+    const remainingJobCount = command.mode === "backfill"
+      ? jobPage.remainingCount + jobs.length - acknowledgedCount
+      : null;
     console.log(
       JSON.stringify({
+        mode: command.mode,
         workDates,
+        bounded: plan.bounded,
+        selectedJobCount: jobs.length,
+        remainingJobCount,
         acknowledgedCount,
         failureCount: failures.length,
         failures,

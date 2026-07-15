@@ -39,6 +39,24 @@ export const accounts = mysqlTable("accounts", {
   updatedAt: updatedAt()
 });
 
+export const llmSettings = mysqlTable("llm_settings", {
+  accountId: varchar("account_id", { length: 64 })
+    .primaryKey()
+    .references(() => accounts.id, {
+      onDelete: "cascade",
+      onUpdate: "cascade"
+    }),
+  provider: mysqlEnum("provider", [
+    "DEEPSEEK",
+    "OPENAI_COMPATIBLE"
+  ]).notNull(),
+  baseUrl: varchar("base_url", { length: 512 }).notNull(),
+  model: varchar("model", { length: 128 }).notNull(),
+  encryptedApiKey: longtext("encrypted_api_key").notNull(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt()
+});
+
 export const devices = mysqlTable(
   "devices",
   {
@@ -675,6 +693,7 @@ export const auditLogs = mysqlTable(
 
 export const schema = {
   accounts,
+  llmSettings,
   devices,
   deviceTokens,
   syncBatches,

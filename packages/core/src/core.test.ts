@@ -7,6 +7,13 @@ import {
 } from "./index";
 
 describe("redactSensitiveText", () => {
+  it("returns a fixed point that is safe to validate a second time", () => {
+    const first = redactSensitiveText(
+      "password: password=secret Cookie: api_key=secretvalue"
+    );
+
+    expect(redactSensitiveText(first)).toBe(first);
+  });
   it("removes common credentials before data enters the outbox", () => {
     const input = [
       "Authorization: Bearer sk-live-super-secret-value",

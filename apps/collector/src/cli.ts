@@ -100,6 +100,7 @@ async function runPrepare(
     write(JSON.stringify({
       command: "prepare",
       sourceType: connector.sourceType,
+      status: failedFiles > 0 ? "partial" : "complete",
       scanned: files.length,
       inserted,
       events,

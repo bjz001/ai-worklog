@@ -135,16 +135,852 @@ interface BatchRow extends RowDataPacket {
   result: unknown;
 }
 
-interface EventRow extends RowDataPacket {
+export interface EventRow extends RowDataPacket {
   id: string;
+  account_id: string;
+  event_id: string;
   content_hash: string;
   current_version: number;
   device_id: string;
   session_id: string;
+  project_id: string | null;
   kind: "USER_PROMPT" | "VISIBLE_RESULT";
   source_message_id: string | null;
   message_index: number;
+  reply_to_event_id: string | null;
   occurred_at: Date;
+  current_sanitized_content: string;
+  legacy_source_session_id: string;
+  legacy_source_type: "CODEX" | "CLAUDE_CODE";
+  legacy_source_instance_id: string;
+}
+
+interface LegacyEventAlias {
+  eventId: string;
+  sourceSessionId: string;
+}
+
+export function compatibleStoredEventIdentity(
+  existing: Pick<
+    EventRow,
+    | "device_id"
+    | "session_id"
+    | "kind"
+    | "source_message_id"
+    | "message_index"
+  >,
+  incoming: {
+    deviceId: string;
+    sessionId: string;
+    event: Pick<SyncEvent, "kind" | "sourceMessageId" | "messageIndex">;
+  }
+): boolean {
+  const sourceMessageId = incoming.event.sourceMessageId ?? null;
+  return (
+    existing.device_id === incoming.deviceId &&
+    existing.session_id === incoming.sessionId &&
+    existing.kind === incoming.event.kind &&
+    existing.source_message_id === sourceMessageId &&
+    (sourceMessageId !== null ||
+      Number(existing.message_index) === incoming.event.messageIndex)
+  );
+}
+
+interface LegacyAliasIdentityOptions {
+  accountId: string;
+  deviceId: string;
+  sessionId: string;
+  source: SyncBatchRequest["source"];
+  event: SyncEvent;
+  legacyAlias: LegacyEventAlias;
+  legacyVersionContentHashes?: readonly string[];
+}
+
+function legacyEventAliasesFromMetadata(
+  source: SyncBatchRequest["source"],
+  event: SyncEvent
+): LegacyEventAlias[] {
+  if (source.type !== "CODEX" || source.parserVersion !== "codex-jsonl-v4") {
+    return [];
+  }
+  const candidates: LegacyEventAlias[] = [];
+  if (
+    typeof event.metadata.legacyEventId === "string" &&
+    /^[a-f0-9]{64}$/u.test(event.metadata.legacyEventId)
+  ) {
+    candidates.push({
+      eventId: event.metadata.legacyEventId,
+      sourceSessionId: event.sourceSessionId
+    });
+  }
+  if (Array.isArray(event.metadata.legacyEventAliases)) {
+    for (const value of event.metadata.legacyEventAliases.slice(0, 4)) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        continue;
+      }
+      const alias = value as Record<string, unknown>;
+      if (
+        typeof alias.eventId === "string" &&
+        /^[a-f0-9]{64}$/u.test(alias.eventId) &&
+        typeof alias.sourceSessionId === "string" &&
+        alias.sourceSessionId.length > 0 &&
+        alias.sourceSessionId.length <= 255
+      ) {
+        candidates.push({
+          eventId: alias.eventId,
+          sourceSessionId: alias.sourceSessionId
+        });
+      }
+    }
+  }
+  return candidates.filter((alias, index, aliases) =>
+    alias.eventId !== event.eventId &&
+    aliases.findIndex((candidate) => candidate.eventId === alias.eventId) === index
+  ).slice(0, 4);
+}
+
+type LegacyStoredEventCompatibility =
+  | "compatible"
+  | "content-mismatch"
+  | "identity-mismatch";
+
+function legacyStoredEventCompatibility(
+  existing: Pick<
+    EventRow,
+    | "account_id"
+    | "event_id"
+    | "device_id"
+    | "session_id"
+    | "kind"
+    | "source_message_id"
+    | "message_index"
+    | "content_hash"
+    | "occurred_at"
+    | "current_sanitized_content"
+    | "legacy_source_session_id"
+    | "legacy_source_type"
+    | "legacy_source_instance_id"
+  >,
+  incoming: LegacyAliasIdentityOptions
+): LegacyStoredEventCompatibility {
+  if (
+    incoming.source.type !== "CODEX" ||
+    incoming.source.parserVersion !== "codex-jsonl-v4" ||
+    existing.account_id !== incoming.accountId ||
+    existing.event_id !== incoming.legacyAlias.eventId ||
+    existing.device_id !== incoming.deviceId ||
+    existing.kind !== incoming.event.kind ||
+    existing.legacy_source_type !== incoming.source.type ||
+    existing.legacy_source_instance_id !== incoming.source.instanceId ||
+    existing.legacy_source_session_id !== incoming.legacyAlias.sourceSessionId ||
+    (incoming.legacyAlias.sourceSessionId === incoming.event.sourceSessionId &&
+      existing.session_id !== incoming.sessionId) ||
+    Math.abs(
+      new Date(existing.occurred_at).getTime() -
+        new Date(incoming.event.occurredAt).getTime()
+    ) > 2_000
+  ) {
+    return "identity-mismatch";
+  }
+
+  if (buildEventId({
+    accountId: incoming.accountId,
+    deviceId: incoming.deviceId,
+    sourceType: incoming.source.type,
+    sourceInstanceId: incoming.source.instanceId,
+    sourceSessionId: incoming.legacyAlias.sourceSessionId,
+    sourceMessageId: existing.source_message_id,
+    messageIndex: Number(existing.message_index)
+  }) !== incoming.legacyAlias.eventId) {
+    return "identity-mismatch";
+  }
+
+  const storedContent = existing.current_sanitized_content
+    .replace(/\s+/gu, " ")
+    .trim();
+  const incomingContent = incoming.event.sanitizedContent
+    .replace(/\s+/gu, " ")
+    .trim();
+  const contentMatches =
+    existing.content_hash === incoming.event.contentHash ||
+    incoming.legacyVersionContentHashes?.includes(
+      incoming.event.contentHash
+    ) === true ||
+    storedContent === incomingContent ||
+    (incomingContent.length >= 1 &&
+      storedContent.endsWith(` ${incomingContent}`)) ||
+    (Math.min(storedContent.length, incomingContent.length) >= 8 &&
+      (storedContent.includes(incomingContent) ||
+        incomingContent.includes(storedContent)));
+  return contentMatches ? "compatible" : "content-mismatch";
+}
+
+export function compatibleLegacyStoredEventIdentity(
+  existing: Parameters<typeof legacyStoredEventCompatibility>[0],
+  incoming: LegacyAliasIdentityOptions
+): boolean {
+  return legacyStoredEventCompatibility(existing, incoming) === "compatible";
+}
+
+const EVENT_ROW_SELECT = `ce.id, ce.account_id, ce.event_id, ce.content_hash,
+  ce.current_version, ce.device_id, ce.session_id, ce.project_id, ce.kind,
+  ce.source_message_id, ce.message_index, ce.reply_to_event_id,
+  ce.occurred_at, ev.sanitized_content AS current_sanitized_content,
+  source_session.source_session_id AS legacy_source_session_id,
+  source_session.source_type AS legacy_source_type,
+  source_session.source_instance_id AS legacy_source_instance_id`;
+
+async function lockedEventById(
+  connection: Pick<PoolConnection, "execute">,
+  accountId: string,
+  eventId: string
+): Promise<EventRow | null> {
+  const [rows] = await connection.execute<EventRow[]>(
+    `SELECT ${EVENT_ROW_SELECT}
+       FROM collected_events ce
+       JOIN event_versions ev
+         ON ev.collected_event_id = ce.id
+        AND ev.version = ce.current_version
+       JOIN sessions source_session
+         ON source_session.id = ce.session_id
+        AND source_session.account_id = ce.account_id
+      WHERE ce.account_id = ? AND ce.event_id = ?
+      FOR UPDATE`,
+    [accountId, eventId]
+  );
+  return rows[0] ?? null;
+}
+
+interface EventVersionContentHashRow extends RowDataPacket {
+  content_hash: string;
+}
+
+async function lockedEventVersionContentHashes(
+  connection: Pick<PoolConnection, "execute">,
+  accountId: string,
+  collectedEventId: string
+): Promise<string[]> {
+  const [rows] = await connection.execute<EventVersionContentHashRow[]>(
+    `SELECT content_hash
+       FROM event_versions
+      WHERE account_id = ? AND collected_event_id = ?
+      ORDER BY version
+      FOR UPDATE`,
+    [accountId, collectedEventId]
+  );
+  return rows.map((row) => row.content_hash);
+}
+
+async function migrateLegacyEventInPlace(options: {
+  connection: Pick<PoolConnection, "execute">;
+  accountId: string;
+  deviceId: string;
+  sessionId: string;
+  projectId: string;
+  event: SyncEvent;
+  legacy: EventRow;
+  alias: LegacyEventAlias;
+}): Promise<EventRow> {
+  const [migration] = await options.connection.execute<ResultSetHeader>(
+    `UPDATE collected_events
+        SET event_id = ?, source_message_id = ?, message_index = ?,
+            reply_to_event_id = ?, session_id = ?, project_id = ?
+      WHERE id = ? AND account_id = ? AND device_id = ? AND session_id = ?
+        AND kind = ? AND event_id = ?`,
+    [
+      options.event.eventId,
+      options.event.sourceMessageId ?? null,
+      options.event.messageIndex,
+      options.event.replyToEventId ?? null,
+      options.sessionId,
+      options.projectId,
+      options.legacy.id,
+      options.accountId,
+      options.deviceId,
+      options.legacy.session_id,
+      options.event.kind,
+      options.alias.eventId
+    ]
+  );
+  if (migration.affectedRows !== 1) throw new EventIdentityMismatchError();
+
+  if (options.event.kind === "USER_PROMPT") {
+    await options.connection.execute<ResultSetHeader>(
+      `UPDATE prompt_entries
+          SET session_id = ?,
+              project_id = IF(is_manual_project_override, project_id, ?)
+        WHERE collected_event_id = ? AND account_id = ? AND device_id = ?
+          AND session_id = ?`,
+      [
+        options.sessionId,
+        options.projectId,
+        options.legacy.id,
+        options.accountId,
+        options.deviceId,
+        options.legacy.session_id
+      ]
+    );
+  } else {
+    const promptEntryId = await promptIdForReply(
+      options.connection,
+      options.accountId,
+      options.event.replyToEventId
+    );
+    await options.connection.execute<ResultSetHeader>(
+      `UPDATE visible_results
+          SET session_id = ?, project_id = ?, prompt_entry_id = ?
+        WHERE collected_event_id = ? AND account_id = ? AND device_id = ?
+          AND session_id = ?`,
+      [
+        options.sessionId,
+        options.projectId,
+        promptEntryId,
+        options.legacy.id,
+        options.accountId,
+        options.deviceId,
+        options.legacy.session_id
+      ]
+    );
+  }
+
+  const replySessionIds = [...new Set([
+    options.legacy.session_id,
+    options.sessionId
+  ])].sort();
+  await options.connection.execute<ResultSetHeader>(
+    `UPDATE collected_events
+        SET reply_to_event_id = ?
+      WHERE account_id = ? AND device_id = ?
+        AND session_id IN (${replySessionIds.map(() => "?").join(", ")})
+        AND reply_to_event_id = ?`,
+    [
+      options.event.eventId,
+      options.accountId,
+      options.deviceId,
+      ...replySessionIds,
+      options.alias.eventId
+    ]
+  );
+
+  return {
+    ...options.legacy,
+    event_id: options.event.eventId,
+    source_message_id: options.event.sourceMessageId ?? null,
+    message_index: options.event.messageIndex,
+    reply_to_event_id: options.event.replyToEventId ?? null,
+    session_id: options.sessionId,
+    project_id: options.projectId
+  };
+}
+
+interface StoredVersionRow extends RowDataPacket {
+  collected_event_id: string;
+  version: number;
+  content_hash: string;
+  sanitized_content: string;
+  parser_version: string;
+  redaction_version: string;
+  metadata: unknown;
+  created_at: Date;
+}
+
+interface DetailIdentityRow extends RowDataPacket {
+  id: string;
+  collected_event_id: string;
+  prompt_entry_id?: string | null;
+}
+
+interface JsonDocumentRow extends RowDataPacket {
+  id: string;
+  document: unknown;
+}
+
+function replaceJsonStringReference(
+  value: unknown,
+  from: string,
+  to: string,
+  depth = 0
+): unknown {
+  if (depth > 32) return value;
+  if (typeof value === "string") return value === from ? to : value;
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      replaceJsonStringReference(item, from, to, depth + 1)
+    );
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      replaceJsonStringReference(item, from, to, depth + 1)
+    ]));
+  }
+  return value;
+}
+
+async function rewriteJsonEvidenceReferences(options: {
+  connection: Pick<PoolConnection, "execute">;
+  accountId: string;
+  fromEventDatabaseId: string;
+  toEventDatabaseId: string;
+}): Promise<void> {
+  const documents = [
+    { table: "daily_summaries", column: "content" },
+    { table: "skill_candidates", column: "proposal" }
+  ] as const;
+  for (const document of documents) {
+    const [rows] = await options.connection.execute<JsonDocumentRow[]>(
+      `SELECT id, ${document.column} AS document
+         FROM ${document.table}
+        WHERE account_id = ?
+          AND JSON_SEARCH(${document.column}, 'one', ?) IS NOT NULL
+        FOR UPDATE`,
+      [options.accountId, options.fromEventDatabaseId]
+    );
+    for (const row of rows) {
+      const parsed = parsedJson(row.document);
+      const replaced = replaceJsonStringReference(
+        parsed,
+        options.fromEventDatabaseId,
+        options.toEventDatabaseId
+      );
+      await options.connection.execute(
+        `UPDATE ${document.table}
+            SET ${document.column} = ?
+          WHERE id = ? AND account_id = ?`,
+        [jsonValue(replaced), row.id, options.accountId]
+      );
+    }
+  }
+}
+
+async function mergeCanonicalDuplicateIntoLegacy(options: {
+  connection: Pick<PoolConnection, "execute">;
+  accountId: string;
+  deviceId: string;
+  sessionId: string;
+  projectId: string;
+  parserVersion: string;
+  event: SyncEvent;
+  canonical: EventRow;
+  legacy: EventRow;
+  alias: LegacyEventAlias;
+}): Promise<EventRow> {
+  const [versions] = await options.connection.execute<StoredVersionRow[]>(
+    `SELECT collected_event_id, version, content_hash, sanitized_content,
+            parser_version, redaction_version, metadata, created_at
+       FROM event_versions
+      WHERE account_id = ? AND collected_event_id IN (?, ?)
+      ORDER BY collected_event_id, version
+      FOR UPDATE`,
+    [options.accountId, options.canonical.id, options.legacy.id]
+  );
+  const legacyVersions = versions.filter((row) =>
+    row.collected_event_id === options.legacy.id
+  );
+  const legacyVersionByHash = new Map(
+    legacyVersions.map((row) => [row.content_hash, Number(row.version)])
+  );
+  let nextVersion = legacyVersions.reduce(
+    (maximum, row) => Math.max(maximum, Number(row.version)),
+    0
+  );
+  for (const version of versions.filter((row) =>
+    row.collected_event_id === options.canonical.id
+  )) {
+    if (legacyVersionByHash.has(version.content_hash)) continue;
+    nextVersion += 1;
+    await options.connection.execute(
+      `INSERT INTO event_versions
+         (id, account_id, collected_event_id, version, content_hash,
+          sanitized_content, parser_version, redaction_version, metadata,
+          created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        stableDatabaseId(
+          "version",
+          options.legacy.id,
+          version.content_hash
+        ),
+        options.accountId,
+        options.legacy.id,
+        nextVersion,
+        version.content_hash,
+        version.sanitized_content,
+        version.parser_version,
+        version.redaction_version,
+        jsonValue(parsedJson(version.metadata) ?? {}),
+        version.created_at
+      ]
+    );
+    legacyVersionByHash.set(version.content_hash, nextVersion);
+  }
+  if (!legacyVersionByHash.has(options.event.contentHash)) {
+    nextVersion += 1;
+    await options.connection.execute(
+      `INSERT INTO event_versions
+         (id, account_id, collected_event_id, version, content_hash,
+          sanitized_content, parser_version, redaction_version, metadata,
+          created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        stableDatabaseId(
+          "version",
+          options.legacy.id,
+          options.event.contentHash
+        ),
+        options.accountId,
+        options.legacy.id,
+        nextVersion,
+        options.event.contentHash,
+        options.event.sanitizedContent,
+        options.parserVersion,
+        options.event.redactionVersion,
+        jsonValue(options.event.metadata),
+        new Date(options.event.occurredAt)
+      ]
+    );
+    legacyVersionByHash.set(options.event.contentHash, nextVersion);
+  }
+  const activeVersion = legacyVersionByHash.get(options.event.contentHash);
+  if (activeVersion === undefined) throw new EventIdentityMismatchError();
+
+  await rewriteJsonEvidenceReferences({
+    connection: options.connection,
+    accountId: options.accountId,
+    fromEventDatabaseId: options.canonical.id,
+    toEventDatabaseId: options.legacy.id
+  });
+
+  await options.connection.execute(
+    `DELETE canonical_evidence
+       FROM summary_evidence canonical_evidence
+       JOIN summary_evidence legacy_evidence
+         ON legacy_evidence.account_id = canonical_evidence.account_id
+        AND legacy_evidence.summary_id = canonical_evidence.summary_id
+        AND legacy_evidence.claim_key = canonical_evidence.claim_key
+        AND legacy_evidence.collected_event_id = ?
+      WHERE canonical_evidence.account_id = ?
+        AND canonical_evidence.collected_event_id = ?`,
+    [options.legacy.id, options.accountId, options.canonical.id]
+  );
+  await options.connection.execute(
+    `UPDATE summary_evidence
+        SET collected_event_id = ?
+      WHERE account_id = ? AND collected_event_id = ?`,
+    [options.legacy.id, options.accountId, options.canonical.id]
+  );
+
+  const detailTable = options.event.kind === "USER_PROMPT"
+    ? "prompt_entries"
+    : "visible_results";
+  const [detailRows] = await options.connection.execute<DetailIdentityRow[]>(
+    `SELECT id, collected_event_id${
+      options.event.kind === "VISIBLE_RESULT" ? ", prompt_entry_id" : ""
+    }
+       FROM ${detailTable}
+      WHERE account_id = ? AND collected_event_id IN (?, ?)
+      FOR UPDATE`,
+    [options.accountId, options.canonical.id, options.legacy.id]
+  );
+  const canonicalDetail = detailRows.find((row) =>
+    row.collected_event_id === options.canonical.id
+  );
+  const legacyDetail = detailRows.find((row) =>
+    row.collected_event_id === options.legacy.id
+  );
+
+  if (canonicalDetail && legacyDetail && options.event.kind === "USER_PROMPT") {
+    await options.connection.execute(
+      `UPDATE visible_results
+          SET prompt_entry_id = ?
+        WHERE account_id = ? AND prompt_entry_id = ?`,
+      [legacyDetail.id, options.accountId, canonicalDetail.id]
+    );
+    await options.connection.execute(
+      `UPDATE prompt_entries legacy_prompt
+       JOIN prompt_entries canonical_prompt ON canonical_prompt.id = ?
+          SET legacy_prompt.is_favorite =
+                legacy_prompt.is_favorite OR canonical_prompt.is_favorite,
+              legacy_prompt.project_id = CASE
+                WHEN legacy_prompt.is_manual_project_override
+                  THEN legacy_prompt.project_id
+                WHEN canonical_prompt.is_manual_project_override
+                  THEN canonical_prompt.project_id
+                ELSE ?
+              END,
+              legacy_prompt.is_manual_project_override =
+                legacy_prompt.is_manual_project_override OR
+                canonical_prompt.is_manual_project_override,
+              legacy_prompt.session_id = ?,
+              legacy_prompt.sanitized_content = ?,
+              legacy_prompt.content_hash = ?,
+              legacy_prompt.model = ?
+        WHERE legacy_prompt.id = ? AND legacy_prompt.account_id = ?`,
+      [
+        canonicalDetail.id,
+        options.projectId,
+        options.sessionId,
+        options.event.sanitizedContent,
+        options.event.contentHash,
+        modelFrom(options.event),
+        legacyDetail.id,
+        options.accountId
+      ]
+    );
+    await options.connection.execute(
+      "DELETE FROM prompt_entries WHERE id = ? AND account_id = ?",
+      [canonicalDetail.id, options.accountId]
+    );
+  } else if (
+    canonicalDetail &&
+    legacyDetail &&
+    options.event.kind === "VISIBLE_RESULT"
+  ) {
+    await options.connection.execute(
+      `UPDATE visible_results legacy_result
+       JOIN visible_results canonical_result ON canonical_result.id = ?
+          SET legacy_result.session_id = ?,
+              legacy_result.project_id = ?,
+              legacy_result.sanitized_content = ?,
+              legacy_result.content_hash = ?,
+              legacy_result.model = ?
+        WHERE legacy_result.id = ? AND legacy_result.account_id = ?`,
+      [
+        canonicalDetail.id,
+        options.sessionId,
+        options.projectId,
+        options.event.sanitizedContent,
+        options.event.contentHash,
+        modelFrom(options.event),
+        legacyDetail.id,
+        options.accountId
+      ]
+    );
+    await options.connection.execute(
+      "DELETE FROM visible_results WHERE id = ? AND account_id = ?",
+      [canonicalDetail.id, options.accountId]
+    );
+  } else if (!legacyDetail && canonicalDetail) {
+    const projectAssignment = options.event.kind === "USER_PROMPT"
+      ? "IF(is_manual_project_override, project_id, ?)"
+      : "?";
+    await options.connection.execute(
+      `UPDATE ${detailTable}
+          SET collected_event_id = ?, session_id = ?,
+              project_id = ${projectAssignment}
+        WHERE id = ? AND account_id = ?`,
+      [
+        options.legacy.id,
+        options.sessionId,
+        options.projectId,
+        canonicalDetail.id,
+        options.accountId
+      ]
+    );
+  }
+
+  if (options.event.kind === "USER_PROMPT") {
+    await options.connection.execute(
+      `UPDATE prompt_entries
+          SET session_id = ?,
+              project_id = IF(is_manual_project_override, project_id, ?),
+              sanitized_content = ?, content_hash = ?, model = ?
+        WHERE account_id = ? AND collected_event_id = ?`,
+      [
+        options.sessionId,
+        options.projectId,
+        options.event.sanitizedContent,
+        options.event.contentHash,
+        modelFrom(options.event),
+        options.accountId,
+        options.legacy.id
+      ]
+    );
+  }
+
+  if (options.event.kind === "VISIBLE_RESULT") {
+    const promptEntryId = await promptIdForReply(
+      options.connection,
+      options.accountId,
+      options.event.replyToEventId
+    );
+    await options.connection.execute(
+      `UPDATE visible_results
+          SET prompt_entry_id = ?, session_id = ?, project_id = ?,
+              sanitized_content = ?, content_hash = ?, model = ?
+        WHERE account_id = ? AND collected_event_id = ?`,
+      [
+        promptEntryId,
+        options.sessionId,
+        options.projectId,
+        options.event.sanitizedContent,
+        options.event.contentHash,
+        modelFrom(options.event),
+        options.accountId,
+        options.legacy.id
+      ]
+    );
+  }
+
+  const replySessionIds = [...new Set([
+    options.legacy.session_id,
+    options.sessionId
+  ])].sort();
+  await options.connection.execute(
+    `UPDATE collected_events
+        SET reply_to_event_id = ?
+      WHERE account_id = ? AND device_id = ?
+        AND session_id IN (${replySessionIds.map(() => "?").join(", ")})
+        AND reply_to_event_id = ?`,
+    [
+      options.event.eventId,
+      options.accountId,
+      options.deviceId,
+      ...replySessionIds,
+      options.alias.eventId
+    ]
+  );
+  const [deleted] = await options.connection.execute<ResultSetHeader>(
+    `DELETE FROM collected_events
+      WHERE id = ? AND account_id = ? AND device_id = ? AND kind = ?
+        AND event_id = ?`,
+    [
+      options.canonical.id,
+      options.accountId,
+      options.deviceId,
+      options.event.kind,
+      options.event.eventId
+    ]
+  );
+  if (deleted.affectedRows !== 1) throw new EventIdentityMismatchError();
+
+  const [migrated] = await options.connection.execute<ResultSetHeader>(
+    `UPDATE collected_events
+        SET event_id = ?, source_message_id = ?, message_index = ?,
+            reply_to_event_id = ?, session_id = ?, project_id = ?,
+            content_hash = ?, current_version = ?, redaction_version = ?,
+            metadata = ?
+      WHERE id = ? AND account_id = ? AND device_id = ? AND session_id = ?
+        AND kind = ? AND event_id = ?`,
+    [
+      options.event.eventId,
+      options.event.sourceMessageId ?? null,
+      options.event.messageIndex,
+      options.event.replyToEventId ?? null,
+      options.sessionId,
+      options.projectId,
+      options.event.contentHash,
+      activeVersion,
+      options.event.redactionVersion,
+      jsonValue(options.event.metadata),
+      options.legacy.id,
+      options.accountId,
+      options.deviceId,
+      options.legacy.session_id,
+      options.event.kind,
+      options.alias.eventId
+    ]
+  );
+  if (migrated.affectedRows !== 1) throw new EventIdentityMismatchError();
+
+  return {
+    ...options.legacy,
+    event_id: options.event.eventId,
+    content_hash: options.event.contentHash,
+    current_version: activeVersion,
+    source_message_id: options.event.sourceMessageId ?? null,
+    message_index: options.event.messageIndex,
+    reply_to_event_id: options.event.replyToEventId ?? null,
+    session_id: options.sessionId,
+    project_id: options.projectId
+  };
+}
+
+export async function resolveStoredEventIdentity(options: {
+  connection: Pick<PoolConnection, "execute">;
+  accountId: string;
+  deviceId: string;
+  sessionId: string;
+  projectId: string;
+  source: SyncBatchRequest["source"];
+  event: SyncEvent;
+}): Promise<{ existing: EventRow | null; migrated: boolean }> {
+  let survivor = await lockedEventById(
+    options.connection,
+    options.accountId,
+    options.event.eventId
+  );
+  if (survivor && !compatibleStoredEventIdentity(survivor, {
+    deviceId: options.deviceId,
+    sessionId: options.sessionId,
+    event: options.event
+  })) {
+    throw new EventIdentityMismatchError();
+  }
+
+  const aliases = legacyEventAliasesFromMetadata(options.source, options.event);
+  let migrated = false;
+  for (const alias of aliases) {
+    const legacy = await lockedEventById(
+      options.connection,
+      options.accountId,
+      alias.eventId
+    );
+    if (!legacy) continue;
+    const compatibilityOptions = {
+      accountId: options.accountId,
+      deviceId: options.deviceId,
+      sessionId: options.sessionId,
+      source: options.source,
+      event: options.event,
+      legacyAlias: alias
+    };
+    let compatibility = legacyStoredEventCompatibility(
+      legacy,
+      compatibilityOptions
+    );
+    if (compatibility === "content-mismatch") {
+      const legacyVersionContentHashes =
+        await lockedEventVersionContentHashes(
+          options.connection,
+          options.accountId,
+          legacy.id
+        );
+      compatibility = legacyStoredEventCompatibility(legacy, {
+        ...compatibilityOptions,
+        legacyVersionContentHashes
+      });
+    }
+    if (compatibility !== "compatible") continue;
+    if (survivor) {
+      if (survivor.id === legacy.id) continue;
+      survivor = await mergeCanonicalDuplicateIntoLegacy({
+        connection: options.connection,
+        accountId: options.accountId,
+        deviceId: options.deviceId,
+        sessionId: options.sessionId,
+        projectId: options.projectId,
+        parserVersion: options.source.parserVersion,
+        event: options.event,
+        canonical: survivor,
+        legacy,
+        alias
+      });
+    } else {
+      survivor = await migrateLegacyEventInPlace({
+        connection: options.connection,
+        accountId: options.accountId,
+        deviceId: options.deviceId,
+        sessionId: options.sessionId,
+        projectId: options.projectId,
+        event: options.event,
+        legacy,
+        alias
+      });
+    }
+    migrated = true;
+  }
+  return { existing: survivor, migrated };
 }
 
 interface AccountTimeZoneRow extends RowDataPacket {
@@ -277,7 +1113,7 @@ async function ensureSession(options: {
 }
 
 async function promptIdForReply(
-  connection: PoolConnection,
+  connection: Pick<PoolConnection, "execute">,
   accountId: string,
   replyToEventId: string | null | undefined
 ): Promise<string | null> {
@@ -415,7 +1251,15 @@ async function updateChangedEvent(options: {
   existing: EventRow;
   event: SyncEvent;
 }): Promise<void> {
-  const nextVersion = Number(options.existing.current_version) + 1;
+  const [versionRows] = await options.connection.execute<
+    Array<RowDataPacket & { max_version: number }>
+  >(
+    `SELECT COALESCE(MAX(version), 0) AS max_version
+       FROM event_versions
+      WHERE collected_event_id = ? AND account_id = ?`,
+    [options.existing.id, options.accountId]
+  );
+  const nextVersion = Number(versionRows[0]?.max_version ?? 0) + 1;
   await options.connection.execute(
     `INSERT INTO event_versions
        (id, account_id, collected_event_id, version, content_hash,
@@ -464,6 +1308,38 @@ async function updateChangedEvent(options: {
       options.existing.id,
       options.accountId
     ]
+  );
+}
+
+export async function backfillVisibleResultPromptLinks(options: {
+  connection: Pick<PoolConnection, "execute">;
+  accountId: string;
+  deviceId: string;
+  sessionIds: Iterable<string>;
+}): Promise<void> {
+  const sessionIds = [...new Set(options.sessionIds)].sort();
+  if (sessionIds.length === 0) return;
+  const sessionPlaceholders = sessionIds.map(() => "?").join(", ");
+  await options.connection.execute(
+    `UPDATE visible_results vr
+     JOIN collected_events result_event
+       ON result_event.id = vr.collected_event_id
+      AND result_event.account_id = vr.account_id
+     JOIN collected_events prompt_event
+       ON prompt_event.account_id = result_event.account_id
+      AND prompt_event.device_id = result_event.device_id
+      AND prompt_event.session_id = result_event.session_id
+      AND prompt_event.event_id = result_event.reply_to_event_id
+      AND prompt_event.kind = 'USER_PROMPT'
+     JOIN prompt_entries pe
+       ON pe.collected_event_id = prompt_event.id
+      AND pe.account_id = prompt_event.account_id
+        SET vr.prompt_entry_id = pe.id
+      WHERE vr.account_id = ?
+        AND result_event.device_id = ?
+        AND result_event.session_id IN (${sessionPlaceholders})
+        AND vr.prompt_entry_id IS NULL`,
+    [options.accountId, options.deviceId, ...sessionIds]
   );
 }
 
@@ -555,6 +1431,7 @@ async function commitSyncBatchAttempt(
     let duplicateCount = 0;
     let changedCount = 0;
     const dirtyWorkDates = new Set<string>();
+    const touchedSessionIds = new Set<string>();
 
     for (const event of [...payload.events].sort((left, right) =>
       left.eventId.localeCompare(right.eventId)
@@ -574,23 +1451,22 @@ async function commitSyncBatchAttempt(
         event,
         projectId: project.id
       });
-      const [eventRows] = await connection.execute<EventRow[]>(
-        `SELECT id, content_hash, current_version, device_id, session_id, kind,
-                source_message_id, message_index, occurred_at
-           FROM collected_events
-          WHERE account_id = ? AND event_id = ?
-          FOR UPDATE`,
-        [options.identity.accountId, event.eventId]
-      );
-      const existing = eventRows[0] ?? null;
-      if (
-        existing &&
-        (existing.device_id !== options.identity.deviceId ||
-          existing.session_id !== sessionId ||
-          existing.kind !== event.kind ||
-          existing.source_message_id !== (event.sourceMessageId ?? null) ||
-          Number(existing.message_index) !== event.messageIndex)
-      ) {
+      touchedSessionIds.add(sessionId);
+      const resolvedIdentity = await resolveStoredEventIdentity({
+        connection,
+        accountId: options.identity.accountId,
+        deviceId: options.identity.deviceId,
+        sessionId,
+        projectId: project.id,
+        source: payload.source,
+        event
+      });
+      const existing = resolvedIdentity.existing;
+      if (existing && !compatibleStoredEventIdentity(existing, {
+        deviceId: options.identity.deviceId,
+        sessionId,
+        event
+      })) {
         throw new EventIdentityMismatchError();
       }
       const [versionRows] = existing
@@ -637,26 +1513,19 @@ async function commitSyncBatchAttempt(
       } else {
         duplicateCount += 1;
       }
+      if (resolvedIdentity.migrated) {
+        dirtyWorkDates.add(
+          workDateInTimeZone(existing?.occurred_at ?? event.occurredAt, accountTimeZone)
+        );
+      }
     }
 
-    await connection.execute(
-      `UPDATE visible_results vr
-       JOIN collected_events result_event
-         ON result_event.id = vr.collected_event_id
-        AND result_event.account_id = vr.account_id
-       JOIN collected_events prompt_event
-         ON prompt_event.account_id = result_event.account_id
-        AND prompt_event.device_id = result_event.device_id
-        AND prompt_event.session_id = result_event.session_id
-        AND prompt_event.event_id = result_event.reply_to_event_id
-        AND prompt_event.kind = 'USER_PROMPT'
-       JOIN prompt_entries pe
-         ON pe.collected_event_id = prompt_event.id
-        AND pe.account_id = prompt_event.account_id
-          SET vr.prompt_entry_id = pe.id
-        WHERE vr.account_id = ? AND vr.prompt_entry_id IS NULL`,
-      [options.identity.accountId]
-    );
+    await backfillVisibleResultPromptLinks({
+      connection,
+      accountId: options.identity.accountId,
+      deviceId: options.identity.deviceId,
+      sessionIds: touchedSessionIds
+    });
 
     await markSummaryDatesDirty({
       connection,

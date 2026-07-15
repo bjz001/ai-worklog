@@ -17,7 +17,8 @@ describe("migration manifest", () => {
     expect(migrations.map((migration) => migration.name)).toEqual([
       "0001_initial.sql",
       "0002_project_canonical_key.sql",
-      "0003_summary_jobs.sql"
+      "0003_summary_jobs.sql",
+      "0004_llm_settings.sql"
     ]);
 
     for (const table of [
@@ -33,6 +34,7 @@ describe("migration manifest", () => {
       "visible_results",
       "daily_summaries",
       "summary_jobs",
+      "llm_settings",
       "summary_evidence",
       "skill_candidates",
       "audit_logs"

@@ -1,6 +1,5 @@
 import { excerpt, sha256Hex } from "@ai-worklog/core";
 import {
-  buildRuleSummary,
   deriveSkillCandidates,
   type EvidenceInput
 } from "@ai-worklog/insights";
@@ -12,6 +11,16 @@ import type {
 } from "mysql2/promise";
 import { accountTimeZone } from "./query-service";
 import { inferEvidenceIntent, workDateInTimeZone } from "./presentation";
+import { parseLlmEncryptionKey } from "./llm-crypto";
+import {
+  getLlmSettingsView,
+  getRuntimeLlmSettings
+} from "./llm-settings-service";
+import {
+  generateLlmDailySummary,
+  type SummaryEvidence
+} from "./llm-summary";
+import type { LlmFetcher, LlmResolver } from "./llm-client";
 
 interface EvidenceRow extends RowDataPacket {
   id: string;
@@ -21,6 +30,7 @@ interface EvidenceRow extends RowDataPacket {
   content: string;
   content_hash: string;
   occurred_at: Date;
+  result_content: string | null;
 }
 
 interface DeviceRow extends RowDataPacket {
@@ -66,14 +76,33 @@ export function summaryFingerprint(input: {
   evidenceFingerprint: string;
   expectedDeviceIds: readonly string[];
   arrivedDeviceIds: readonly string[];
+  generatorFingerprint?: string;
 }): string {
   return sha256Hex(
     [
-      "summary-input-v1",
+      "summary-input-v2",
       input.evidenceFingerprint,
       [...input.expectedDeviceIds].sort().join(","),
-      [...input.arrivedDeviceIds].sort().join(",")
+      [...input.arrivedDeviceIds].sort().join(","),
+      input.generatorFingerprint ?? "rule-summary-v1"
     ].join("\u001f")
+  );
+}
+
+export function summaryEvidenceFingerprint(
+  evidence: readonly SummaryEvidence[]
+): string {
+  return sha256Hex(
+    [...evidence]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((item) =>
+        [
+          item.id,
+          item.contentHash,
+          sha256Hex(item.result ?? "")
+        ].join(":")
+      )
+      .join("|")
   );
 }
 
@@ -90,12 +119,18 @@ async function evidenceForDate(options: {
   accountId: string;
   timeZone: string;
   workDate: string;
-}): Promise<EvidenceInput[]> {
+}): Promise<SummaryEvidence[]> {
   const range = broadUtcRange(options.workDate);
   const [rows] = await options.pool.execute<EvidenceRow[]>(
     `SELECT pe.collected_event_id AS id, pe.project_id,
             COALESCE(p.name, '未分类项目') AS project_name,
             pe.device_id, pe.sanitized_content AS content, pe.content_hash,
+            (SELECT vr.sanitized_content
+               FROM visible_results vr
+              WHERE vr.account_id = pe.account_id
+                AND vr.prompt_entry_id = pe.id
+              ORDER BY vr.occurred_at DESC
+              LIMIT 1) AS result_content,
             pe.occurred_at
        FROM prompt_entries pe
        LEFT JOIN projects p
@@ -116,6 +151,7 @@ async function evidenceForDate(options: {
       deviceId: row.device_id,
       content: row.content,
       contentHash: row.content_hash,
+      result: row.result_content,
       occurredAt: row.occurred_at.toISOString(),
       intent: inferEvidenceIntent(row.content)
     }));
@@ -226,6 +262,9 @@ async function refreshDailyInsightsLocked(options: {
   connection: PoolConnection;
   accountId: string;
   workDate: string;
+  masterKey?: Buffer;
+  fetcher?: LlmFetcher;
+  resolver?: LlmResolver;
 }): Promise<RefreshInsightResult> {
   const timeZone = await accountTimeZone(options.connection, options.accountId);
   const [deviceRows, evidence, arrivedDeviceIds, latestRows] = await Promise.all([
@@ -255,17 +294,20 @@ async function refreshDailyInsightsLocked(options: {
     )
   ]);
   const expectedDeviceIds = deviceRows[0].map((row) => row.id);
-  const summary = buildRuleSummary({
-    workDate: options.workDate,
-    timeZone,
-    expectedDeviceIds,
-    arrivedDeviceIds,
-    evidence
+  const llmView = await getLlmSettingsView({
+    pool: options.connection,
+    accountId: options.accountId
   });
   const inputFingerprint = summaryFingerprint({
-    evidenceFingerprint: summary.inputFingerprint,
+    evidenceFingerprint: summaryEvidenceFingerprint(evidence),
     expectedDeviceIds,
-    arrivedDeviceIds
+    arrivedDeviceIds,
+    generatorFingerprint: [
+      "llm-summary-v1",
+      llmView.provider,
+      llmView.baseUrl,
+      llmView.model
+    ].join(":")
   });
   const latest = latestRows[0][0];
   const skillCandidateCount = await refreshSkillCandidates({
@@ -296,6 +338,22 @@ async function refreshDailyInsightsLocked(options: {
     };
   }
 
+  const llmSettings = await getRuntimeLlmSettings({
+    pool: options.connection,
+    accountId: options.accountId,
+    masterKey: options.masterKey ?? parseLlmEncryptionKey()
+  });
+  const summary = await generateLlmDailySummary({
+    settings: llmSettings,
+    workDate: options.workDate,
+    timeZone,
+    expectedDeviceIds,
+    arrivedDeviceIds,
+    evidence,
+    fetcher: options.fetcher,
+    resolver: options.resolver
+  });
+
   const revision = Number(latest?.revision ?? 0) + 1;
   const summaryId = databaseId(
     "summary",
@@ -309,8 +367,9 @@ async function refreshDailyInsightsLocked(options: {
     const [insert] = await connection.execute<ResultSetHeader>(
       `INSERT INTO daily_summaries
          (id, account_id, work_date, time_zone, revision, status,
-          input_fingerprint, content, coverage, template_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'rule-summary-v1')
+          input_fingerprint, content, coverage, model_provider, model_name,
+          template_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm-summary-v1')
        ON DUPLICATE KEY UPDATE id = id`,
       [
         summaryId,
@@ -321,7 +380,9 @@ async function refreshDailyInsightsLocked(options: {
         summary.status === "complete" ? "COMPLETE" : "PARTIAL",
         inputFingerprint,
         JSON.stringify({ ...summary, inputFingerprint }),
-        JSON.stringify({ expectedDeviceIds, arrivedDeviceIds })
+        JSON.stringify({ expectedDeviceIds, arrivedDeviceIds }),
+        llmSettings.provider,
+        llmSettings.model
       ]
     );
     const [summaryRows] = await connection.execute<IdentifierRow[]>(
@@ -381,7 +442,9 @@ async function refreshDailyInsightsLocked(options: {
             workDate: options.workDate,
             revision,
             evidenceCount: evidence.length,
-            status: summary.status
+            status: summary.status,
+            provider: llmSettings.provider,
+            model: llmSettings.model
           })
         ]
       );
@@ -404,6 +467,9 @@ export async function refreshDailyInsights(options: {
   pool: Pool;
   accountId: string;
   workDate: string;
+  masterKey?: Buffer;
+  fetcher?: LlmFetcher;
+  resolver?: LlmResolver;
 }): Promise<RefreshInsightResult> {
   const connection = await options.pool.getConnection();
   const lockName = summaryLockName(options.accountId, options.workDate);
@@ -419,7 +485,10 @@ export async function refreshDailyInsights(options: {
     return await refreshDailyInsightsLocked({
       connection,
       accountId: options.accountId,
-      workDate: options.workDate
+      workDate: options.workDate,
+      masterKey: options.masterKey,
+      fetcher: options.fetcher,
+      resolver: options.resolver
     });
   } finally {
     if (acquired) {

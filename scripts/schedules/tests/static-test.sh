@@ -10,6 +10,10 @@ required_files=(
   "$SCHEDULE_ROOT/macos/install.sh"
   "$SCHEDULE_ROOT/macos/run.sh"
   "$SCHEDULE_ROOT/macos/uninstall.sh"
+  "$SCHEDULE_ROOT/macos-worker/com.ai-worklog.worker.plist.template"
+  "$SCHEDULE_ROOT/macos-worker/install.sh"
+  "$SCHEDULE_ROOT/macos-worker/run.sh"
+  "$SCHEDULE_ROOT/macos-worker/uninstall.sh"
   "$SCHEDULE_ROOT/windows/Install.ps1"
   "$SCHEDULE_ROOT/windows/Run.ps1"
   "$SCHEDULE_ROOT/windows/Uninstall.ps1"
@@ -23,7 +27,10 @@ for file in "${required_files[@]}"; do
   }
 done
 
-for script in "$SCHEDULE_ROOT"/macos/*.sh "$SCHEDULE_ROOT/tests/"*.sh; do
+for script in \
+  "$SCHEDULE_ROOT"/macos/*.sh \
+  "$SCHEDULE_ROOT"/macos-worker/*.sh \
+  "$SCHEDULE_ROOT/tests/"*.sh; do
   bash -n "$script"
 done
 
@@ -33,6 +40,31 @@ grep -q '<integer>30</integer>' "$plist"
 grep -q '<string>--config</string>' "$plist"
 if grep -Eqi 'AI_WORKLOG_DEVICE_TOKEN|Authorization:|Bearer[[:space:]]|123456' "$plist"; then
   printf 'launchd template must not contain credentials\n' >&2
+  exit 1
+fi
+
+worker_plist="$SCHEDULE_ROOT/macos-worker/com.ai-worklog.worker.plist.template"
+worker_installer="$SCHEDULE_ROOT/macos-worker/install.sh"
+grep -q '<string>com.ai-worklog.worker</string>' "$worker_plist"
+grep -q '<integer>23</integer>' "$worker_plist"
+grep -q '<integer>40</integer>' "$worker_plist"
+grep -q '<key>WorkingDirectory</key>' "$worker_plist"
+grep -q '<string>--project-root</string>' "$worker_plist"
+grep -q '<string>--node</string>' "$worker_plist"
+grep -q '<key>Hour</key><integer>23</integer>' "$worker_installer"
+grep -q '<key>Minute</key><integer>40</integer>' "$worker_installer"
+grep -q '<key>WorkingDirectory</key>' "$worker_installer"
+grep -q -- '--project-root' "$worker_installer"
+grep -q -- '--node' "$worker_installer"
+if grep -ERqi \
+  'MYSQL_(PASSWORD|URL)|DATABASE_URL|LLM_SETTINGS_ENCRYPTION_KEY|API_KEY|Authorization:|Bearer[[:space:]]|123456' \
+  "$SCHEDULE_ROOT/macos-worker"; then
+  printf 'worker launchd files must not contain credentials\n' >&2
+  exit 1
+fi
+if grep -ERq -- '--backfill|[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+  "$SCHEDULE_ROOT/macos-worker"; then
+  printf 'scheduled worker must use the bounded default command\n' >&2
   exit 1
 fi
 
@@ -82,6 +114,7 @@ fi
 
 if command -v plutil >/dev/null 2>&1; then
   plutil -lint "$plist" >/dev/null
+  plutil -lint "$worker_plist" >/dev/null
 fi
 if command -v pwsh >/dev/null 2>&1; then
   for script in "$SCHEDULE_ROOT"/windows/*.ps1; do
@@ -260,6 +293,100 @@ fi
 if grep -q 'embedded-secret' "$temporary_directory/bad-endpoint.out"; then
   printf 'runner exposed credentials embedded in the sync URL\n' >&2
   exit 1
+fi
+
+worker_root="$temporary_directory/worker root"
+worker_fake_node="$temporary_directory/path with spaces/fake-worker-node"
+worker_capture_path="$temporary_directory/path with spaces/worker-calls.log"
+worker_canary='WORKER_SCHEDULE_SECRET_CANARY_DO_NOT_PRINT'
+mkdir -p \
+  "$worker_root/node_modules/tsx/dist" \
+  "$worker_root/apps/worker/src" \
+  "$temporary_directory/worker-home"
+worker_root="$(cd "$worker_root" && pwd -P)"
+: >"$worker_root/node_modules/tsx/dist/cli.mjs"
+: >"$worker_root/apps/worker/src/index.ts"
+printf 'MYSQL_PASSWORD=%s\n' "$worker_canary" >"$worker_root/.env.local"
+chmod 600 "$worker_root/.env.local"
+
+cat >"$worker_fake_node" <<'FAKE_WORKER_NODE'
+#!/usr/bin/env bash
+printf '%s|%s\n' "$PWD" "$*" >>"$WORKER_SCHEDULE_CAPTURE_PATH"
+FAKE_WORKER_NODE
+chmod 700 "$worker_fake_node"
+
+worker_dry_output="$(HOME="$temporary_directory/worker-home" \
+  WORKER_SCHEDULE_CAPTURE_PATH="$worker_capture_path" \
+  bash "$SCHEDULE_ROOT/macos-worker/run.sh" \
+    --project-root "$worker_root" --node "$worker_fake_node" --dry-run 2>&1)"
+[[ "$worker_dry_output" == *'"status":"dry-run"'* ]] || {
+  printf 'worker runner dry-run failed\n' >&2
+  exit 1
+}
+[[ ! -e "$worker_capture_path" && "$worker_dry_output" != *"$worker_canary"* ]] || {
+  printf 'worker dry-run executed work or exposed a secret\n' >&2
+  exit 1
+}
+
+worker_validate_output="$(HOME="$temporary_directory/worker-home" \
+  WORKER_SCHEDULE_CAPTURE_PATH="$worker_capture_path" \
+  bash "$SCHEDULE_ROOT/macos-worker/run.sh" \
+    --project-root "$worker_root" --node "$worker_fake_node" --validate-only 2>&1)"
+[[ "$worker_validate_output" == *'"status":"ok"'* && ! -e "$worker_capture_path" ]] || {
+  printf 'worker validate-only executed work or failed validation\n' >&2
+  exit 1
+}
+
+worker_stale_lock="$temporary_directory/worker-home/Library/Caches/AIWorklog/worker-schedule.lock"
+mkdir -p "$worker_stale_lock"
+printf '2147483647\n' >"$worker_stale_lock/pid"
+worker_run_output="$(HOME="$temporary_directory/worker-home" \
+  WORKER_SCHEDULE_CAPTURE_PATH="$worker_capture_path" \
+  bash "$SCHEDULE_ROOT/macos-worker/run.sh" \
+    --project-root "$worker_root" --node "$worker_fake_node" 2>&1)"
+[[ "$worker_run_output" == *'"phase":"worker","status":"completed"'* ]] || {
+  printf 'bounded worker runner did not complete\n' >&2
+  exit 1
+}
+[[ "$worker_run_output" != *"$worker_canary"* && ! -e "$worker_stale_lock" ]] || {
+  printf 'worker runner exposed a secret or left its lock behind\n' >&2
+  exit 1
+}
+expected_worker_call="$worker_root|$worker_root/node_modules/tsx/dist/cli.mjs $worker_root/apps/worker/src/index.ts"
+actual_worker_call="$(cat "$worker_capture_path")"
+[[ "$actual_worker_call" == "$expected_worker_call" ]] || {
+  printf 'scheduled worker did not use the project cwd and bounded default arguments\n' >&2
+  exit 1
+}
+
+: >"$worker_capture_path"
+mkdir -p "$worker_stale_lock"
+printf '%s\n' "$$" >"$worker_stale_lock/pid"
+worker_lock_output="$(HOME="$temporary_directory/worker-home" \
+  WORKER_SCHEDULE_CAPTURE_PATH="$worker_capture_path" \
+  bash "$SCHEDULE_ROOT/macos-worker/run.sh" \
+    --project-root "$worker_root" --node "$worker_fake_node" 2>&1)"
+[[ "$worker_lock_output" == *'"phase":"lock","status":"skipped"'* \
+  && ! -s "$worker_capture_path" ]] || {
+  printf 'worker mutual-exclusion lock did not skip an overlapping run\n' >&2
+  exit 1
+}
+rm -rf "$worker_stale_lock"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  worker_install_output="$(HOME="$temporary_directory/worker-home" \
+    bash "$SCHEDULE_ROOT/macos-worker/install.sh" \
+      --project-root "$worker_root" --node "$worker_fake_node" --dry-run 2>&1)"
+  [[ "$worker_install_output" == *'"status":"dry-run"'* ]] || {
+    printf 'worker LaunchAgent installer dry-run failed\n' >&2
+    exit 1
+  }
+  worker_uninstall_output="$(HOME="$temporary_directory/worker-home" \
+    bash "$SCHEDULE_ROOT/macos-worker/uninstall.sh" --dry-run 2>&1)"
+  [[ "$worker_uninstall_output" == *'"status":"dry-run"'* ]] || {
+    printf 'worker LaunchAgent uninstaller dry-run failed\n' >&2
+    exit 1
+  }
 fi
 
 printf 'schedule static checks passed\n'

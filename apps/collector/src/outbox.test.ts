@@ -104,7 +104,7 @@ describe("Outbox", () => {
     expect(outbox.status()).toEqual({ pending: 2, acked: 0, total: 2 });
     expect(batches.map((batch) => batch.source.parserVersion).sort()).toEqual([
       "codex-jsonl-v1",
-      "codex-jsonl-v2"
+      "codex-jsonl-v4"
     ]);
     expect(batches[0]?.events.map(({ eventId, messageIndex }) => ({
       eventId,

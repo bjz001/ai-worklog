@@ -12,6 +12,7 @@ const navigation: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/prompts", label: "Prompt 库", icon: "prompt" },
   { href: "/skills", label: "Skill 中心", icon: "skill" },
   { href: "/sync", label: "同步中心", icon: "sync" },
+  { href: "/settings", label: "LLM 设置", icon: "settings" },
   { href: "/privacy", label: "数据与隐私", icon: "shield" }
 ];
 

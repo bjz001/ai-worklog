@@ -92,6 +92,66 @@ export async function fetchApi<T>(
   return payload;
 }
 
+export async function mutateApi<T>(
+  path: string,
+  options: {
+    method: "POST" | "PUT" | "PATCH" | "DELETE";
+    body: unknown;
+    apiBase?: string;
+    fetcher?: Fetcher;
+    signal?: AbortSignal;
+  }
+): Promise<T> {
+  const fetcher = options.fetcher ?? fetch;
+  const response = await fetcher(
+    resolveApiUrl(path, options.apiBase ?? process.env.NEXT_PUBLIC_API_BASE_URL),
+    {
+      method: options.method,
+      body: JSON.stringify(options.body),
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-AI-Worklog-Request": "1"
+      },
+      signal: options.signal
+    }
+  );
+  const contentType = response.headers.get("content-type") ?? "";
+  let payload: (T & ApiErrorPayload) | undefined;
+  if (contentType.includes("application/json")) {
+    try {
+      payload = (await response.json()) as T & ApiErrorPayload;
+    } catch {
+      throw new ApiRequestError({
+        status: response.status,
+        code: "INVALID_RESPONSE",
+        message: "服务返回了无法识别的数据",
+        retryable: true
+      });
+    }
+  }
+  if (!response.ok) {
+    throw new ApiRequestError({
+      status: response.status,
+      code: payload?.error?.code,
+      message: payload?.error?.message,
+      retryable: payload?.error?.retryable,
+      requestId: payload?.error?.requestId
+    });
+  }
+  if (payload === undefined) {
+    throw new ApiRequestError({
+      status: response.status,
+      code: "INVALID_RESPONSE",
+      message: "服务返回了无法识别的数据",
+      retryable: true
+    });
+  }
+  return payload;
+}
+
 export type CollectionState =
   | "loading"
   | "error"

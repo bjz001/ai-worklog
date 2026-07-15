@@ -63,7 +63,7 @@ export function repositoryRootName(localPath: string): string | null {
 
 const REDACTED = "[REDACTED]";
 
-export function redactSensitiveText(input: string): string {
+function redactSensitiveTextOnce(input: string): string {
   return input
     .replace(
       /\b(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b/g,
@@ -100,6 +100,19 @@ export function redactSensitiveText(input: string): string {
       /((?:密码|口令|令牌|密钥)\s*[:：=]\s*)["']?[^\s,"’';，；]+["']?/gu,
       (_match, label: string) => `${label}${REDACTED}`
     );
+}
+
+export function redactSensitiveText(input: string): string {
+  let current = input;
+  // Overlapping credential shapes can expose a second recognizable shape
+  // after the first replacement. Return a fixed point so collector and server
+  // validation agree and a second pass can never reveal a missed secret.
+  for (let pass = 0; pass < 8; pass += 1) {
+    const next = redactSensitiveTextOnce(current);
+    if (next === current) return current;
+    current = next;
+  }
+  return current;
 }
 
 export function excerpt(value: string, maxLength = 140): string {

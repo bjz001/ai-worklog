@@ -21,6 +21,6 @@ describe("@ai-worklog/db public API", () => {
     expect(runMigrations).toBeTypeOf("function");
     expect(bootstrapDatabase).toBeTypeOf("function");
     expect(runDemoSeed).toBeTypeOf("function");
-    expect(Object.keys(schema)).toHaveLength(15);
+    expect(Object.keys(schema)).toHaveLength(16);
   });
 });

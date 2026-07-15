@@ -4,6 +4,7 @@ import {
   ApiRequestError,
   collectionState,
   fetchApi,
+  mutateApi,
   resolveApiUrl
 } from "./api-client";
 
@@ -15,6 +16,36 @@ describe("resolveApiUrl", () => {
   it("joins a configured API base without duplicate slashes", () => {
     expect(resolveApiUrl("/api/v1/projects", "https://worklog.test/")).toBe(
       "https://worklog.test/api/v1/projects"
+    );
+  });
+});
+
+describe("mutateApi", () => {
+  it("sends same-origin JSON with the CSRF marker", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: { saved: true } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    await expect(
+      mutateApi<{ data: { saved: boolean } }>("/api/v1/llm-settings", {
+        method: "PUT",
+        body: { model: "deepseek-v4-flash" },
+        fetcher
+      })
+    ).resolves.toEqual({ data: { saved: true } });
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/v1/llm-settings",
+      expect.objectContaining({
+        method: "PUT",
+        credentials: "same-origin",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          "X-AI-Worklog-Request": "1"
+        })
+      })
     );
   });
 });

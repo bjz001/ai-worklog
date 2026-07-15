@@ -9,20 +9,22 @@ flowchart LR
   A --> D[("MySQL 8<br/>ai_worklog")]
   D --> U["工作台 / 项目 / 日历<br/>Prompt / Skill / 同步中心"]
   D --> K["中央 Worker"]
-  K --> S["证据化日总结<br/>Skill 候选"]
+  K --> L["DeepSeek / OpenAI 兼容 LLM"]
+  L --> S["证据化日总结"]
+  K --> S2["人工审核的 Skill 候选"]
 ```
 
 ## 已实现
 
-- Codex 与 Claude Code JSONL 连接器，包含 Windows / macOS fixture 回归测试。
+- Codex 与 Claude Code JSONL 连接器，覆盖 Codex 多会话分段、显示层消息和图片输入占位，并包含 Windows / macOS fixture 回归测试。
 - SQLite Outbox、每批最多 200 事件且不超过 2 MiB、ACK 后确认、超时后安全重传。
 - 设备独立 Token HMAC 鉴权、请求摘要、幂等批次与事件版本。
 - MySQL 8 迁移、UTC `DATETIME(6)`、`utf8mb4`、ngram 中文全文索引。
 - 两台设备通过规范化 Git Remote 归并到同一项目。
-- 中央 Worker 根据已持久化的同步批次刷新证据化日总结；设备未到齐时标记 `partial`。
+- 中央 Worker 使用已配置的 DeepSeek / OpenAI 兼容模型识别工作进展；每条结论必须引用合法证据，设备未到齐时标记 `partial`。
 - 迟到数据生成新 Revision；人工编辑后不会被静默覆盖。
 - 基于重复证据生成 Skill 候选，不会自动写入或发布 Skill。
-- Gmail / Material 风格的 7 个页面，支持 1440 / 1280 / 1024 宽度。
+- Gmail / Material 风格的 8 个页面，支持 1440 / 1280 / 1024 宽度。
 
 ## 环境要求
 
@@ -40,6 +42,7 @@ cp .env.example .env.local
 # 并把所有 replace-with-* 换成随机值。两枚设备 Token 必须不同且至少 32 字符。
 npm run db:bootstrap
 npm run db:seed
+npm run llm:key:init
 npm run dev
 ```
 
@@ -50,7 +53,7 @@ npm run build
 npm run start -w @ai-worklog/web
 ```
 
-`.env.local` 已被 Git 忽略。不要把 MySQL 密码、设备 Token、Token Pepper 或工作台密码写入源码。
+`.env.local` 已被 Git 忽略。不要把 MySQL 密码、设备 Token、Token Pepper、LLM 主密钥或工作台密码写入源码。
 可用 `openssl rand -hex 32` 生成 Pepper/Token；Windows PowerShell 可执行 `$b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Fill($b); [Convert]::ToHexString($b)`。首次初始化顺序是：管理员账户建库/迁移/种子数据 → 创建低权限应用账户 → 切换 Web/Worker 运行凭证。
 
 ### MySQL 权限
@@ -101,6 +104,13 @@ CLAUDE_CODE_SOURCE_PATH=/Users/me/.claude/projects
 
 Windows 将路径改为 `%USERPROFILE%\\.codex\\sessions`、`%USERPROFILE%\\.claude\\projects` 和 `%USERPROFILE%\\.ai-worklog\\collector.sqlite`。
 
+当前 Mac 可从已有 `.env.local` 安全生成仓库外的受限配置，再验证：
+
+```bash
+npm run collector:configure:macos
+bash scripts/schedules/macos/run.sh --validate-only
+```
+
 手动执行两个连接器：
 
 ```bash
@@ -115,18 +125,36 @@ npm run collector -- status
 ## 每晚自动同步
 
 macOS launchd 与 Windows Task Scheduler 安装/卸载脚本见 [README_SCHEDULES.md](./README_SCHEDULES.md)。默认每晚 23:30 运行，密钥只从设备本地的受限配置文件读取。
+中央服务所在的 Mac 可按同一文档另外安装 23:40 的有界总结 Worker LaunchAgent；它不会自动执行历史回补。
 
 同步 API 收到 ACK 前，Outbox 不会删除待传数据。断网、进程退出或“数据库已提交但 ACK 丢失”后，下次会安全重传。
 
 ## 总结 Worker
 
-同步 HTTP 请求只负责事务提交并立即 ACK，不在请求线程生成总结。发生新增或变更时，同步事务会按账户时区把工作日期登记到持久化 `summary_jobs`；中央 Worker 读取全部待总结日期并利用输入指纹幂等补算：
+同步 HTTP 请求只负责事务提交并立即 ACK，不在请求线程生成总结。发生新增或变更时，同步事务会按账户时区把工作日期登记到持久化 `summary_jobs`。Worker 有三种显式执行范围：
 
 ```bash
+npm run worker
 npm run worker -- 2026-07-14
+npm run worker -- --backfill
 ```
 
-不传日期时同时包含账户时区中的当天。输入指纹未变化时不生成重复 Revision。任务仅在成功刷新后按 generation 条件清除；若刷新期间又有新同步、Worker 崩溃或处理失败，任务会保留给下次重试。在中央服务的调度器/进程守护中将 `npm run worker` 安排在设备同步之后（例如每晚 23:40）。
+不传参数时始终幂等刷新账户时区中的当天，并且只查询当天与昨天的任务：仅当昨天仍有 `summary_job` 时才一并刷新昨天，因此默认每次最多两个日期。这能处理次日才到达的昨日另一台设备数据并生成新 Revision，同时不会扫描或自动消费更早的历史积压。指定 `YYYY-MM-DD` 时只处理该日。只有显式传入 `--backfill` 才读取完整持久任务队列，并按日期从早到晚每次最多处理 31 日；JSON 输出中的 `bounded` 和 `remainingJobCount` 会说明是否触及上限及本轮后仍待处理的数量，若仍有积压可再次显式执行。这样默认的每日调度不会静默触发无界的付费模型调用。
+
+输入指纹未变化时不生成重复 Revision。任务仅在 LLM 返回严格 JSON、全部 evidenceId 校验通过并成功持久化后，才按 generation 条件清除；未配置、鉴权失败、超时、限流、非法 JSON 或无效证据引用都会保留任务以供重试。在中央服务的调度器/进程守护中将默认的 `npm run worker` 安排在设备同步之后（例如每晚 23:40）。
+
+### LLM 配置
+
+先生成独立的 256 位本机主密钥，再从“LLM 设置”页面保存并测试连接：
+
+```bash
+npm run llm:key:init
+```
+
+默认使用 DeepSeek 官方 `https://api.deepseek.com` 与 `deepseek-v4-flash`。API Key 使用绑定账户的 AES-256-GCM 密文存入 MySQL；GET API 和页面只返回 `hasApiKey`，不会返回明文、密文、尾号、IV 或认证标签。主密钥不会自动生成；替换 `LLM_SETTINGS_ENCRYPTION_KEY` 前必须先迁移已有密文，否则旧配置无法解密。
+更换服务商或 Base URL 的 origin 时必须输入新 Key；系统不会把已保存的 DeepSeek Key 复用到新域名。“测试连接”按账户限制为每分钟 5 次，防止误点或脚本反复发起付费请求。
+
+发送给模型的是中心端已经脱敏、截断且有总量上限的 Prompt 与可见结果。模型输入被标记为不可信证据，不会执行其中的命令或链接。Skill 候选仍由确定性规则生成并保持人工确认。
 
 ## API
 
@@ -138,6 +166,9 @@ npm run worker -- 2026-07-14
 - `GET /api/v1/skills`
 - `GET /api/v1/sync`
 - `GET /api/v1/privacy`
+- `GET /api/v1/llm-settings`
+- `PUT /api/v1/llm-settings`
+- `POST /api/v1/llm-settings/test`
 
 生产环境中，页面和读 API 使用 `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` 的 Basic Auth，并必须置于 HTTPS 之后。同步接口不使用工作台密码，而使用每台设备的独立 Token。
 
@@ -146,6 +177,7 @@ npm run worker -- 2026-07-14
 - 原始 Prompt 默认留在本机，中心仅保存脱敏后的可搜索内容。
 - 中心需要做搜索与总结，因此这不是“服务器看不到明文”的零知识系统。
 - 历史 Prompt、助手结果和 Skill 全部作为不可信数据，不执行其中的命令、链接或工具调用。
+- LLM 写接口要求可信 `APP_BASE_URL` 同源、JSON Content-Type、自定义请求标记与 16 KiB 请求上限；上游地址拒绝私网解析和重定向。
 - 中心服务会二次检查内容摘要、脱敏状态与 metadata 白名单。
 - 日志只记录 ID、计数和错误码，不记录 Prompt、Token 或 Git Remote。
 - 应用内含鉴权前熔断与有界 MySQL 等待队列；公网部署仍必须在可信反向代理上对 `/api/v1/sync/batches` 按来源 IP 限流。

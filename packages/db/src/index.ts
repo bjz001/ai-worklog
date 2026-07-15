@@ -41,6 +41,7 @@ export {
   deviceTokens,
   devices,
   eventVersions,
+  llmSettings,
   projects,
   promptEntries,
   schema,

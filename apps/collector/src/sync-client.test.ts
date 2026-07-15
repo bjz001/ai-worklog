@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { CodexConnector } from "./codex-connector.js";
 import { Outbox } from "./outbox.js";
@@ -73,7 +74,11 @@ describe("syncPending", () => {
   });
 
   it("leaves a batch pending when the server does not ACK it", async () => {
-    const outbox = new Outbox(join(mkdtempSync(join(tmpdir(), "collector-sync-")), "collector.sqlite"));
+    const databasePath = join(
+      mkdtempSync(join(tmpdir(), "collector-sync-")),
+      "collector.sqlite"
+    );
+    const outbox = new Outbox(databasePath);
     openOutboxes.push(outbox);
     const connector = new CodexConnector({
       accountId: "account-1",
@@ -87,7 +92,14 @@ describe("syncPending", () => {
     });
     const server = createServer((_request, response) => {
       response.writeHead(503, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: { code: "UNAVAILABLE" } }));
+      response.end(JSON.stringify({
+        error: {
+          code: "SYNTHETIC_UNAVAILABLE",
+          message: "synthetic test failure",
+          retryable: true,
+          requestId: "synthetic-request-id"
+        }
+      }));
     });
     await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
     const address = server.address();
@@ -102,10 +114,77 @@ describe("syncPending", () => {
 
       expect(result).toEqual({ attempted: 1, acked: 0, failed: 1 });
       expect(outbox.status().pending).toBe(1);
+      const inspector = new Database(databasePath, { readonly: true });
+      try {
+        const row = inspector.prepare(
+          "SELECT last_error_code FROM outbox_batches LIMIT 1"
+        ).get() as { last_error_code: string };
+        expect(row.last_error_code).toBe("SYNTHETIC_UNAVAILABLE");
+      } finally {
+        inspector.close();
+      }
     } finally {
       await new Promise<void>((resolveClose, rejectClose) =>
         server.close((error) => error ? rejectClose(error) : resolveClose())
       );
+    }
+  });
+
+  it("never forwards a batch body to a redirect destination", async () => {
+    const outbox = new Outbox(join(mkdtempSync(join(tmpdir(), "collector-sync-")), "collector.sqlite"));
+    openOutboxes.push(outbox);
+    await prepareFile({
+      connector: new CodexConnector({
+        accountId: "account-1",
+        deviceId: "mac-device",
+        sourceInstanceId: "mac-codex"
+      }),
+      outbox,
+      filePath: resolve(fixturesRoot, "macos/session.jsonl")
+    });
+    let redirectedRequestCount = 0;
+    const sink = createServer((_request, response) => {
+      redirectedRequestCount += 1;
+      response.writeHead(204);
+      response.end();
+    });
+    await new Promise<void>((resolveListen) =>
+      sink.listen(0, "127.0.0.1", resolveListen)
+    );
+    const sinkAddress = sink.address();
+    if (!sinkAddress || typeof sinkAddress === "string") {
+      throw new Error("test sink did not bind");
+    }
+    const source = createServer((_request, response) => {
+      response.writeHead(307, {
+        location: `http://127.0.0.1:${sinkAddress.port}/unexpected`
+      });
+      response.end();
+    });
+    await new Promise<void>((resolveListen) =>
+      source.listen(0, "127.0.0.1", resolveListen)
+    );
+    const sourceAddress = source.address();
+    if (!sourceAddress || typeof sourceAddress === "string") {
+      throw new Error("test source did not bind");
+    }
+
+    try {
+      const result = await syncPending({
+        outbox,
+        endpoint: `http://127.0.0.1:${sourceAddress.port}/v1/sync/batches`,
+        token: "fixture-device-token"
+      });
+
+      expect(result).toEqual({ attempted: 1, acked: 0, failed: 1 });
+      expect(redirectedRequestCount).toBe(0);
+      expect(outbox.status().pending).toBe(1);
+    } finally {
+      await Promise.all([source, sink].map((server) =>
+        new Promise<void>((resolveClose, rejectClose) =>
+          server.close((error) => error ? rejectClose(error) : resolveClose())
+        )
+      ));
     }
   });
 
@@ -209,6 +288,64 @@ describe("syncPending", () => {
       expect(sleeps).toEqual([2_000]);
       expect(requestCount).toBe(2);
       expect(outbox.status().acked).toBe(1);
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => error ? rejectClose(error) : resolveClose())
+      );
+    }
+  });
+
+  it("bounds persistent rate-limit retries across the pending backlog", async () => {
+    const outbox = new Outbox(join(mkdtempSync(join(tmpdir(), "collector-sync-")), "collector.sqlite"));
+    openOutboxes.push(outbox);
+    await prepareFile({
+      connector: new CodexConnector({
+        accountId: "account-1",
+        deviceId: "mac-device",
+        sourceInstanceId: "mac-codex"
+      }),
+      outbox,
+      filePath: resolve(fixturesRoot, "macos/session.jsonl")
+    });
+    await prepareFile({
+      connector: new CodexConnector({
+        accountId: "account-1",
+        deviceId: "windows-device",
+        sourceInstanceId: "windows-codex"
+      }),
+      outbox,
+      filePath: resolve(fixturesRoot, "windows/session.jsonl")
+    });
+    let requestCount = 0;
+    const server = createServer((_request, response) => {
+      requestCount += 1;
+      response.writeHead(429, { "retry-after": "1" });
+      response.end();
+    });
+    await new Promise<void>((resolveListen) =>
+      server.listen(0, "127.0.0.1", resolveListen)
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server did not bind");
+    }
+    const sleeps: number[] = [];
+
+    try {
+      const result = await syncPending({
+        outbox,
+        endpoint: `http://127.0.0.1:${address.port}/v1/sync/batches`,
+        token: "fixture-device-token",
+        limit: 10,
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+        }
+      });
+
+      expect(result).toEqual({ attempted: 1, acked: 0, failed: 1 });
+      expect(requestCount).toBe(4);
+      expect(sleeps).toEqual([1_000, 1_000, 1_000]);
+      expect(outbox.status()).toEqual({ pending: 2, acked: 0, total: 2 });
     } finally {
       await new Promise<void>((resolveClose, rejectClose) =>
         server.close((error) => error ? rejectClose(error) : resolveClose())

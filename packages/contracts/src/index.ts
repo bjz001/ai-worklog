@@ -4,6 +4,49 @@ export const MAX_SYNC_BATCH_BODY_BYTES = 2 * 1024 * 1024;
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const DateTimeSchema = z.string().datetime({ offset: true });
+export const MAX_LEGACY_EVENT_ALIASES = 4;
+
+export const LegacyEventAliasSchema = z
+  .object({
+    eventId: Sha256Schema,
+    sourceSessionId: z.string().min(1).max(255)
+  })
+  .strict();
+
+export const LegacyEventAliasesSchema = z
+  .array(LegacyEventAliasSchema)
+  .min(1)
+  .max(MAX_LEGACY_EVENT_ALIASES)
+  .superRefine((aliases, context) => {
+    if (new Set(aliases.map((alias) => alias.eventId)).size !== aliases.length) {
+      context.addIssue({
+        code: "custom",
+        message: "legacy event aliases must have unique event IDs"
+      });
+    }
+  });
+
+const SyncEventMetadataSchema = z
+  .record(z.string(), z.unknown())
+  .superRefine((metadata, context) => {
+    if (metadata.legacyEventId !== undefined) {
+      const result = Sha256Schema.safeParse(metadata.legacyEventId);
+      if (!result.success) {
+        context.addIssue({ code: "custom", message: "invalid legacyEventId" });
+      }
+    }
+    if (metadata.legacyEventAliases !== undefined) {
+      const result = LegacyEventAliasesSchema.safeParse(
+        metadata.legacyEventAliases
+      );
+      if (!result.success) {
+        context.addIssue({
+          code: "custom",
+          message: "invalid legacyEventAliases"
+        });
+      }
+    }
+  });
 
 export const ProjectHintSchema = z
   .object({
@@ -27,9 +70,32 @@ export const SyncEventSchema = z
     contentHash: Sha256Schema,
     redactionVersion: z.string().min(1).max(32),
     projectHint: ProjectHintSchema.optional(),
-    metadata: z.record(z.string(), z.unknown()).default({})
+    metadata: SyncEventMetadataSchema.default({})
   })
-  .strict();
+  .strict()
+  .superRefine((event, context) => {
+    const aliases = event.metadata.legacyEventAliases;
+    if (
+      Array.isArray(aliases) &&
+      aliases.some((alias) =>
+        typeof alias === "object" &&
+        alias !== null &&
+        "eventId" in alias &&
+        alias.eventId === event.eventId
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "canonical event ID cannot be a legacy alias"
+      });
+    }
+    if (event.metadata.legacyEventId === event.eventId) {
+      context.addIssue({
+        code: "custom",
+        message: "canonical event ID cannot be a legacy alias"
+      });
+    }
+  });
 
 export const SyncBatchRequestSchema = z
   .object({
@@ -76,6 +142,60 @@ export type SyncBatchRequest = z.infer<typeof SyncBatchRequestSchema>;
 export type SyncEvent = z.infer<typeof SyncEventSchema>;
 export type SyncBatchResult = z.infer<typeof SyncBatchResultSchema>;
 export type ApiError = z.infer<typeof ApiErrorSchema>;
+
+export const LlmProviderSchema = z.enum([
+  "DEEPSEEK",
+  "OPENAI_COMPATIBLE"
+]);
+
+export const LlmSettingsUpdateSchema = z
+  .object({
+    provider: LlmProviderSchema,
+    baseUrl: z.string().trim().min(1).max(512),
+    model: z.string().trim().min(1).max(128),
+    apiKey: z
+      .string()
+      .min(8)
+      .max(1024)
+      .regex(/^[\x21-\x7E]+$/)
+      .optional()
+  })
+  .strict();
+
+export const LlmSettingsViewSchema = z
+  .object({
+    provider: LlmProviderSchema,
+    baseUrl: z.string(),
+    model: z.string(),
+    hasApiKey: z.boolean(),
+    updatedAt: z.string().nullable()
+  })
+  .strict();
+
+export const LlmSettingsResponseSchema = z
+  .object({ data: LlmSettingsViewSchema })
+  .strict();
+
+export const LlmConnectionTestResponseSchema = z
+  .object({
+    data: z
+      .object({
+        ok: z.literal(true),
+        provider: LlmProviderSchema,
+        model: z.string(),
+        latencyMs: z.number().int().nonnegative()
+      })
+      .strict()
+  })
+  .strict();
+
+export type LlmProvider = z.infer<typeof LlmProviderSchema>;
+export type LlmSettingsUpdate = z.infer<typeof LlmSettingsUpdateSchema>;
+export type LlmSettingsView = z.infer<typeof LlmSettingsViewSchema>;
+export type LlmSettingsResponse = z.infer<typeof LlmSettingsResponseSchema>;
+export type LlmConnectionTestResponse = z.infer<
+  typeof LlmConnectionTestResponseSchema
+>;
 
 export const DeviceStatusSchema = z.enum([
   "NOT_CONFIGURED",

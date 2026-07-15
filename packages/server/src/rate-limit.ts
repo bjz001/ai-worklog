@@ -57,3 +57,11 @@ export const syncPreAuthRateLimiter = new InMemoryRateLimiter({
   windowMs: 60_000,
   maxKeys: 1
 });
+
+// Connection tests make a billable upstream request. Keep accidental double
+// clicks or scripted abuse bounded independently for each dashboard account.
+export const llmConnectionTestRateLimiter = new InMemoryRateLimiter({
+  limit: 5,
+  windowMs: 60_000,
+  maxKeys: 1_000
+});

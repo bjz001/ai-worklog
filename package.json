@@ -17,6 +17,8 @@
     "db:bootstrap": "tsx packages/db/src/bootstrap.ts",
     "db:migrate": "tsx packages/db/src/migrate.ts",
     "db:seed": "tsx packages/db/src/seed.ts",
+    "llm:key:init": "node scripts/ensure-llm-encryption-key.mjs",
+    "collector:configure:macos": "node scripts/configure-macos-collector.mjs",
     "collector": "tsx apps/collector/src/index.ts",
     "worker": "tsx apps/worker/src/index.ts"
   },

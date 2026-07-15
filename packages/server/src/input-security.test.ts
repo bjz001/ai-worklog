@@ -56,6 +56,67 @@ describe("validateSanitizedEvents", () => {
     ).toThrow("metadata");
   });
 
+  it("accepts only a lowercase SHA-256 legacy event alias", () => {
+    expect(() =>
+      validateSanitizedEvents([
+        event("safe", undefined, { legacyEventId: "b".repeat(64) })
+      ])
+    ).not.toThrow();
+    expect(() =>
+      validateSanitizedEvents([
+        event("safe", undefined, { legacyEventId: "A".repeat(64) })
+      ])
+    ).toThrow("metadata");
+    expect(() =>
+      validateSanitizedEvents([
+        event("safe", undefined, { legacyEventId: "a".repeat(63) })
+      ])
+    ).toThrow("metadata");
+  });
+
+  it("accepts only bounded, unique, strict alias descriptors", () => {
+    expect(() =>
+      validateSanitizedEvents([
+        event("safe", undefined, {
+          legacyEventAliases: [
+            { eventId: "b".repeat(64), sourceSessionId: "session-b" },
+            { eventId: "c".repeat(64), sourceSessionId: "session-a" }
+          ]
+        })
+      ])
+    ).not.toThrow();
+    expect(() =>
+      validateSanitizedEvents([
+        event("safe", undefined, {
+          legacyEventAliases: Array.from({ length: 5 }, (_, index) => ({
+            eventId: index.toString(16).padStart(64, "0"),
+            sourceSessionId: `session-${index}`
+          }))
+        })
+      ])
+    ).toThrow("metadata");
+    expect(() =>
+      validateSanitizedEvents([
+        event("safe", undefined, {
+          legacyEventAliases: [
+            { eventId: "b".repeat(64), sourceSessionId: "session-b" },
+            { eventId: "b".repeat(64), sourceSessionId: "session-a" }
+          ]
+        })
+      ])
+    ).toThrow("metadata");
+    expect(() =>
+      validateSanitizedEvents([
+        event("safe", undefined, {
+          legacyEventAliases: [{
+            eventId: "A".repeat(64),
+            sourceSessionId: "password=unsafe-secret"
+          }]
+        })
+      ])
+    ).toThrow("metadata");
+  });
+
   it("rejects an invalid source time zone before it can break date views", () => {
     expect(() =>
       validateSanitizedEvents([

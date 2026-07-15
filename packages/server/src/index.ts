@@ -12,8 +12,39 @@ export {
   validateSanitizedEvents
 } from "./input-security";
 export {
+  decryptApiKey,
+  encryptApiKey,
+  parseLlmEncryptionKey
+} from "./llm-crypto";
+export {
+  DEFAULT_LLM_SETTINGS,
+  LlmSettingsError,
+  getLlmSettingsView,
+  getRuntimeLlmSettings,
+  normalizeLlmBaseUrl,
+  saveLlmSettings,
+  type RuntimeLlmSettings
+} from "./llm-settings-service";
+export {
+  LlmUpstreamError,
+  assertPublicLlmDestination,
+  chatCompletionsUrl,
+  requestLlmJson,
+  testLlmConnection,
+  type LlmFetcher,
+  type LlmMessage,
+  type LlmResolver
+} from "./llm-client";
+export {
+  LlmSummaryError,
+  generateLlmDailySummary,
+  type GeneratedLlmSummary,
+  type SummaryEvidence
+} from "./llm-summary";
+export {
   refreshDailyInsights,
   refreshInsightsForEvents,
+  summaryEvidenceFingerprint,
   summaryFingerprint,
   type RefreshInsightResult
 } from "./insight-service";
@@ -32,6 +63,7 @@ export {
 } from "./query-service";
 export {
   InMemoryRateLimiter,
+  llmConnectionTestRateLimiter,
   RateLimitError,
   syncPreAuthRateLimiter,
   syncRateLimiter

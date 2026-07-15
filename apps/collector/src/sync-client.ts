@@ -1,4 +1,7 @@
-import { SyncBatchResultSchema } from "@ai-worklog/contracts";
+import {
+  ApiErrorSchema,
+  SyncBatchResultSchema
+} from "@ai-worklog/contracts";
 import { sha256Hex } from "@ai-worklog/core";
 import type { Outbox, PendingBatch } from "./outbox.js";
 
@@ -74,6 +77,20 @@ async function readLimitedResponse(response: Response, maxBytes: number): Promis
   return new TextDecoder().decode(combined);
 }
 
+async function serverFailureCode(response: Response): Promise<string> {
+  const fallback = `HTTP_${response.status}`;
+  try {
+    const body = await readLimitedResponse(response, 64 * 1024);
+    const parsed = ApiErrorSchema.safeParse(JSON.parse(body));
+    return parsed.success && /^[A-Z][A-Z0-9_]{2,63}$/u.test(parsed.data.error.code)
+      ? parsed.data.error.code
+      : fallback;
+  } catch {
+    await response.body?.cancel().catch(() => undefined);
+    return fallback;
+  }
+}
+
 async function uploadBatch(options: {
   batch: PendingBatch;
   endpoint: URL;
@@ -86,6 +103,7 @@ async function uploadBatch(options: {
 
   const response = await fetch(options.endpoint, {
     method: "POST",
+    redirect: "manual",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${options.token}`,
@@ -97,11 +115,11 @@ async function uploadBatch(options: {
   });
 
   if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
     if (response.status === 429) {
+      await response.body?.cancel().catch(() => undefined);
       throw new ServerRateLimitError(retryAfterMilliseconds(response));
     }
-    throw new Error(`HTTP_${response.status}`);
+    throw new Error(await serverFailureCode(response));
   }
   const responseText = await readLimitedResponse(response, 64 * 1024);
 
@@ -131,6 +149,10 @@ export async function syncPending(options: {
   const result: SyncResult = { attempted: 0, acked: 0, failed: 0 };
   const sleep = options.sleep ?? ((milliseconds: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const maxRateLimitRetries = Math.max(
+    0,
+    Math.min(Math.trunc(options.maxRateLimitRetries ?? 3), 20)
+  );
 
   for (const batch of batches) {
     result.attempted += 1;
@@ -142,7 +164,9 @@ export async function syncPending(options: {
           batch,
           endpoint,
           token: options.token,
-          timeoutMs: options.timeoutMs ?? 15_000
+          // Remote MySQL may need more than 15 seconds for a first historical
+          // batch while preserving atomic event/version/job writes.
+          timeoutMs: options.timeoutMs ?? 60_000
         });
         options.outbox.markAcked(batch.batchId);
         result.acked += 1;
@@ -150,7 +174,7 @@ export async function syncPending(options: {
       } catch (error) {
         if (
           error instanceof ServerRateLimitError &&
-          rateLimitRetries < (options.maxRateLimitRetries ?? 20)
+          rateLimitRetries < maxRateLimitRetries
         ) {
           rateLimitRetries += 1;
           await sleep(error.retryAfterMs);
@@ -158,6 +182,10 @@ export async function syncPending(options: {
         }
         options.outbox.recordFailure(batch.batchId, failureCode(error));
         result.failed += 1;
+        // A persistent 429 applies to the device, not just this batch. Once the
+        // bounded retry budget is exhausted, leave later batches untouched for
+        // the next scheduled run instead of multiplying waits by backlog size.
+        if (error instanceof ServerRateLimitError) return result;
         break;
       }
     }

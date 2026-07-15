@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  truncateSync,
+  writeFileSync
+} from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -84,6 +90,7 @@ describe("collector CLI", () => {
     expect(payload).toContain('"parserVersion":"claude-code-jsonl-v2"');
     expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
       command: "prepare",
+      status: "complete",
       scanned: 1,
       inserted: 1,
       events: 2,
@@ -167,14 +174,26 @@ describe("collector CLI", () => {
     }
   });
 
-  it("queues healthy files while reporting an isolated malformed file", async () => {
+  it("queues healthy files while isolating empty, malformed, and oversized files", async () => {
     const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
     const databasePath = join(directory, "collector.sqlite");
     writeFileSync(join(directory, "broken.jsonl"), "{not-json}\n");
+    writeFileSync(join(directory, "empty.jsonl"), "");
     writeFileSync(
       join(directory, "healthy.jsonl"),
       readFileSync(resolve(fixturesRoot, "windows/session.jsonl"), "utf8")
     );
+    writeFileSync(
+      join(directory, "metadata-only.jsonl"),
+      `${JSON.stringify({
+        timestamp: "2026-07-15T00:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "metadata-only", source_time_zone: "UTC" }
+      })}\n`
+    );
+    const oversizedPath = join(directory, "oversized.jsonl");
+    writeFileSync(oversizedPath, "");
+    truncateSync(oversizedPath, 256 * 1024 * 1024 + 1);
     const output: string[] = [];
 
     await expect(runCli(["prepare"], {
@@ -192,11 +211,13 @@ describe("collector CLI", () => {
     expect(outbox.status().pending).toBe(1);
     outbox.close();
     expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
-      scanned: 2,
+      status: "partial",
+      scanned: 5,
       inserted: 1,
-      skippedFiles: 0,
-      failedFiles: 1
+      skippedFiles: 1,
+      failedFiles: 3
     });
     expect(output.join("\n")).not.toContain("broken.jsonl");
+    rmSync(directory, { recursive: true, force: true });
   });
 });

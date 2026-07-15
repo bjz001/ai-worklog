@@ -2,9 +2,11 @@
 
 这套脚本在 macOS 和 Windows 的本地时区每天 23:30 按固定顺序执行三步：采集 Codex、采集 Claude Code，最后将本地 Outbox 中的待同步批次以有界批量发送到中央 API。两种本地数据源都使用同一个本机 `AI_WORKLOG_DEVICE_ID`，但使用不同的 source instance 和路径。采集器在写入 Outbox 前脱敏。
 
+中央服务所在的 Mac 可另外安装一个每天 23:40 的总结 Worker LaunchAgent。该任务永远调用无参数的有界默认模式，最多处理当天与有待处理任务的昨天；它不会自动传入历史回补参数。
+
 两台机器使用同一个账号和 API，但必须使用不同的 `AI_WORKLOG_DEVICE_ID`、两组 source instance 以及设备令牌。这样 Windows 和 macOS 的数据会汇总到同一账号，同时仍能区分设备和工具来源。
 
-调度器不读取项目的 `.env.local`，也不将令牌写入 plist 或 Task Scheduler 参数。它们只引用仓库外的专用配置文件。配置按数据解析，不会被 shell 或 PowerShell 执行。
+采集调度器不读取项目的 `.env.local`，也不将令牌写入 plist 或 Task Scheduler 参数。它们只引用仓库外的专用配置文件；配置按数据解析，不会被 shell 或 PowerShell 执行。中央 Worker 在项目根目录中运行，由应用自身读取权限受限的 `.env.local`；Worker plist 与命令行只包含脚本、项目根目录和 Node.js 的绝对路径，不包含 MySQL 或 LLM 凭证。
 
 ## 准备配置
 
@@ -26,6 +28,15 @@
 配置文件不支持 `export`、变量展开或多行值。如果值两端使用同类引号，解析器会去掉外层引号，但不会执行其中内容。
 
 ## macOS（launchd）
+
+若中心服务与当前 Mac 共用本项目的 `.env.local`，可以直接生成配置（不会回显令牌）：
+
+```bash
+npm run collector:configure:macos
+bash scripts/schedules/macos/run.sh --validate-only
+```
+
+否则按下面步骤手工创建。
 
 创建私有配置：
 
@@ -59,6 +70,42 @@ bash scripts/schedules/macos/run.sh \
 ```bash
 bash scripts/schedules/macos/uninstall.sh --dry-run
 bash scripts/schedules/macos/uninstall.sh
+```
+
+## 中央 Mac 总结 Worker（launchd）
+
+只在运行中央 Web/Worker 和 MySQL 连接配置的 Mac 上安装。先在项目根目录安装依赖，确认 `.env.local` 由当前用户所有，并禁止组和其他用户读取：
+
+```bash
+npm install
+chmod 600 .env.local
+```
+
+以下验证和 dry-run 只检查文件、权限、项目路径和 Node.js 绝对路径，不连接 MySQL、不调用 LLM，也不启动 Worker：
+
+```bash
+bash scripts/schedules/macos-worker/run.sh \
+  --node "$(command -v node)" --validate-only
+bash scripts/schedules/macos-worker/run.sh \
+  --node "$(command -v node)" --dry-run
+bash scripts/schedules/macos-worker/install.sh \
+  --node "$(command -v node)" --dry-run
+```
+
+确认输出为成功状态后再安装每天 23:40 的 LaunchAgent：
+
+```bash
+bash scripts/schedules/macos-worker/install.sh \
+  --node "$(command -v node)"
+```
+
+安装器会把当前项目根目录写入 `WorkingDirectory`，并把当前 Node.js 可执行文件的绝对路径写入 plist，因此不依赖 launchd 的最小 `PATH`。每次调度只执行无参数 Worker，并使用 `~/Library/Caches/AIWorklog/worker-schedule.lock` 防止重叠运行。标准输出与错误日志分别写入 `~/Library/Logs/AIWorklog/worker-schedule.log` 和 `worker-schedule-error.log`，只包含阶段、状态和 UTC 时间。
+
+移动项目目录或更换 Node.js 后必须重新安装。卸载不会删除 `.env.local`、数据库或日志：
+
+```bash
+bash scripts/schedules/macos-worker/uninstall.sh --dry-run
+bash scripts/schedules/macos-worker/uninstall.sh
 ```
 
 ## Windows（Task Scheduler）
@@ -99,6 +146,8 @@ icacls $Config /grant:r "*$($CurrentSid):(R,W)" "*S-1-5-18:(R)" "*S-1-5-32-544:(
 - 上传失败的批次保留在本地 Outbox，下次运行继续重试。
 - 移动项目目录、Node.js 路径或配置文件后，需重新执行安装脚本。
 - 卸载仅删除调度任务，不删除配置、Outbox 和日志。
+- 中央 Mac Worker 使用独立互斥锁；重叠调度会安全跳过，崩溃遗留的无效 PID 锁会在下次运行时恢复。
+- 中央 Mac Worker 永远走默认有界模式；历史回补必须由操作者在项目根目录手动显式执行。
 
 静态校验（不连接远程、不启动 Docker）：
 
