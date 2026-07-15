@@ -191,55 +191,22 @@ if [[ "$MODE" == "validate-only" ]]; then
 fi
 
 LOCK_PARENT="$HOME/Library/Caches/AIWorklog"
-LOCK_DIRECTORY="$LOCK_PARENT/schedule.lock"
+LOCK_FILE="$LOCK_PARENT/schedule.lock"
 mkdir -p "$LOCK_PARENT"
 chmod 700 "$LOCK_PARENT"
-
-write_lock_owner() {
-  if ! printf '%s\n' "$$" >"$LOCK_DIRECTORY/pid"; then
-    rm -f "$LOCK_DIRECTORY/pid"
-    rmdir "$LOCK_DIRECTORY" 2>/dev/null || true
-    return 1
-  fi
-}
-
-acquire_lock() {
-  local existing_pid stale_directory
-  if mkdir "$LOCK_DIRECTORY" 2>/dev/null; then
-    write_lock_owner || return 1
-    return 0
-  fi
-
-  existing_pid=""
-  if [[ -d "$LOCK_DIRECTORY" && ! -L "$LOCK_DIRECTORY" ]]; then
-    IFS= read -r existing_pid 2>/dev/null <"$LOCK_DIRECTORY/pid" || true
-    if [[ -z "$existing_pid" ]]; then
-      sleep 1
-      IFS= read -r existing_pid 2>/dev/null <"$LOCK_DIRECTORY/pid" || true
-    fi
-  fi
-  [[ "$existing_pid" =~ ^[1-9][0-9]*$ && "$existing_pid" != "1" ]] || return 1
-  if kill -0 "$existing_pid" 2>/dev/null; then
-    return 1
-  fi
-
-  stale_directory="$LOCK_PARENT/schedule.stale.$$"
-  mv "$LOCK_DIRECTORY" "$stale_directory" 2>/dev/null || return 1
-  rm -rf "$stale_directory"
-  mkdir "$LOCK_DIRECTORY" 2>/dev/null || return 1
-  write_lock_owner || return 1
-}
-
-if ! acquire_lock; then
+[[ -d "$LOCK_PARENT" && ! -L "$LOCK_PARENT" ]] || fail_config
+[[ "$(config_owner "$LOCK_PARENT")" == "$(id -u)" ]] || fail_config
+if [[ -e "$LOCK_FILE" || -L "$LOCK_FILE" ]]; then
+  [[ -f "$LOCK_FILE" && ! -L "$LOCK_FILE" ]] || fail_config
+  [[ "$(config_owner "$LOCK_FILE")" == "$(id -u)" ]] || fail_config
+fi
+exec 9>"$LOCK_FILE" || fail_config
+chmod 600 "$LOCK_FILE"
+if ! /usr/bin/lockf -s -t 0 9; then
   safe_event "lock" "skipped"
   exit 0
 fi
 
-cleanup() {
-  rm -f "$LOCK_DIRECTORY/pid"
-  rmdir "$LOCK_DIRECTORY" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 

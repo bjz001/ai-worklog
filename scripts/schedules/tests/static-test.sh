@@ -227,8 +227,9 @@ chmod 600 "$config"
 
 mkdir -p "$temporary_directory/home"
 stale_lock="$temporary_directory/home/Library/Caches/AIWorklog/schedule.lock"
-mkdir -p "$stale_lock"
-printf '2147483647\n' >"$stale_lock/pid"
+mkdir -p "$(dirname "$stale_lock")"
+printf 'pre-existing-lock-file\n' >"$stale_lock"
+chmod 600 "$stale_lock"
 run_output="$(HOME="$temporary_directory/home" \
   SCHEDULE_CAPTURE_PATH="$capture_path" \
   bash "$SCHEDULE_ROOT/macos/run.sh" --config "$config" 2>&1)"
@@ -237,7 +238,7 @@ run_output="$(HOME="$temporary_directory/home" \
   exit 1
 }
 [[ "$run_output" == *'"phase":"prepare-codex","status":"ok"'* ]] || {
-  printf 'scheduled run did not prepare Codex after recovering a stale lock\n' >&2
+  printf 'scheduled run did not prepare Codex with a reusable lock file\n' >&2
   exit 1
 }
 [[ "$run_output" == *'"phase":"prepare-claude-code","status":"ok"'* ]] || {
@@ -252,8 +253,8 @@ run_output="$(HOME="$temporary_directory/home" \
   printf 'scheduled run did not report completion\n' >&2
   exit 1
 }
-[[ ! -e "$stale_lock" ]] || {
-  printf 'scheduled run left a stale lock behind\n' >&2
+[[ -f "$stale_lock" && ! -L "$stale_lock" ]] || {
+  printf 'scheduled run did not preserve its reusable lock file\n' >&2
   exit 1
 }
 expected_calls=$'CODEX:prepare\nCLAUDE_CODE:prepare\nunset:sync'
@@ -264,16 +265,27 @@ actual_calls="$(cat "$capture_path")"
 }
 
 : >"$capture_path"
-mkdir -p "$stale_lock"
-empty_collector_lock_output="$(HOME="$temporary_directory/home" \
-  SCHEDULE_CAPTURE_PATH="$capture_path" \
-  bash "$SCHEDULE_ROOT/macos/run.sh" --config "$config" 2>&1)"
-[[ "$empty_collector_lock_output" == *'"phase":"lock","status":"skipped"'* \
-  && ! -s "$capture_path" && -d "$stale_lock" && ! -e "$stale_lock/pid" ]] || {
-  printf 'collector stole a lock whose owner publication was still pending\n' >&2
+collector_lock_ready="$temporary_directory/collector-lock-ready"
+/usr/bin/lockf -k -t 0 "$stale_lock" /bin/bash -c \
+  'printf ready >"$1"; sleep 2' lock-holder "$collector_lock_ready" &
+collector_lock_holder=$!
+for _attempt in {1..40}; do
+  [[ -e "$collector_lock_ready" ]] && break
+  sleep 0.05
+done
+[[ -e "$collector_lock_ready" ]] || {
+  printf 'collector lock holder did not start\n' >&2
   exit 1
 }
-rm -rf "$stale_lock"
+collector_lock_output="$(HOME="$temporary_directory/home" \
+  SCHEDULE_CAPTURE_PATH="$capture_path" \
+  bash "$SCHEDULE_ROOT/macos/run.sh" --config "$config" 2>&1)"
+[[ "$collector_lock_output" == *'"phase":"lock","status":"skipped"'* \
+  && ! -s "$capture_path" ]] || {
+  printf 'collector did not honor an active kernel lock\n' >&2
+  exit 1
+}
+wait "$collector_lock_holder"
 
 : >"$capture_path"
 if HOME="$temporary_directory/home" \
@@ -436,18 +448,33 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 
   runtime_empty_lock_home="$temporary_directory/runtime-empty-lock-home"
   runtime_empty_lock="$runtime_empty_lock_home/Library/Caches/AIWorklog/runtime-deploy.lock"
-  mkdir -p "$runtime_empty_lock"
+  runtime_lock_ready="$temporary_directory/runtime-lock-ready"
+  mkdir -p "$(dirname "$runtime_empty_lock")"
+  : >"$runtime_empty_lock"
+  chmod 600 "$runtime_empty_lock"
+  /usr/bin/lockf -k -t 0 "$runtime_empty_lock" /bin/bash -c \
+    'printf ready >"$1"; sleep 2' lock-holder "$runtime_lock_ready" &
+  runtime_lock_holder=$!
+  for _attempt in {1..40}; do
+    [[ -e "$runtime_lock_ready" ]] && break
+    sleep 0.05
+  done
+  [[ -e "$runtime_lock_ready" ]] || {
+    printf 'runtime deployment lock holder did not start\n' >&2
+    exit 1
+  }
   if HOME="$runtime_empty_lock_home" \
     bash "$SCHEDULE_ROOT/macos-runtime/deploy.sh" \
       --project-root "$runtime_project" --node "$runtime_fake_node" \
       >"$temporary_directory/runtime-empty-lock.out" 2>&1; then
-    printf 'runtime deploy stole a lock whose owner publication was still pending\n' >&2
+    printf 'runtime deploy ignored an active kernel deployment lock\n' >&2
     exit 1
   fi
+  wait "$runtime_lock_holder"
   grep -q '"phase":"deployment-lock","status":"failed"' \
     "$temporary_directory/runtime-empty-lock.out"
-  [[ -d "$runtime_empty_lock" && ! -e "$runtime_empty_lock/pid" ]] || {
-    printf 'runtime deploy mutated an indeterminate deployment lock\n' >&2
+  [[ -f "$runtime_empty_lock" && ! -L "$runtime_empty_lock" ]] || {
+    printf 'runtime deploy replaced its kernel lock file\n' >&2
     exit 1
   }
 
@@ -510,8 +537,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   grep -Fq 'schedule.lock' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
   grep -Fq 'worker-schedule.lock' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
   grep -Fq 'runtime-deploy.lock' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
-  grep -Fq 'acquire_barrier_lock' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
-  grep -Fq 'release_barrier_locks' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq '/usr/bin/lockf -s -t 0' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq '/usr/bin/lockf -s -t 0' "$SCHEDULE_ROOT/macos/run.sh"
+  grep -Fq '/usr/bin/lockf -s -t 0' "$SCHEDULE_ROOT/macos-worker/run.sh"
   grep -Fq 'reenable_disabled_services' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
   grep -Fq 'rollback_ok' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
   grep -Fq -- "--exclude '.data'" "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
@@ -561,8 +589,9 @@ worker_validate_output="$(HOME="$temporary_directory/worker-home" \
 }
 
 worker_stale_lock="$temporary_directory/worker-home/Library/Caches/AIWorklog/worker-schedule.lock"
-mkdir -p "$worker_stale_lock"
-printf '2147483647\n' >"$worker_stale_lock/pid"
+mkdir -p "$(dirname "$worker_stale_lock")"
+printf 'pre-existing-lock-file\n' >"$worker_stale_lock"
+chmod 600 "$worker_stale_lock"
 worker_run_output="$(HOME="$temporary_directory/worker-home" \
   WORKER_SCHEDULE_CAPTURE_PATH="$worker_capture_path" \
   bash "$SCHEDULE_ROOT/macos-worker/run.sh" \
@@ -571,8 +600,9 @@ worker_run_output="$(HOME="$temporary_directory/worker-home" \
   printf 'bounded worker runner did not complete\n' >&2
   exit 1
 }
-[[ "$worker_run_output" != *"$worker_canary"* && ! -e "$worker_stale_lock" ]] || {
-  printf 'worker runner exposed a secret or left its lock behind\n' >&2
+[[ "$worker_run_output" != *"$worker_canary"* \
+  && -f "$worker_stale_lock" && ! -L "$worker_stale_lock" ]] || {
+  printf 'worker runner exposed a secret or replaced its reusable lock file\n' >&2
   exit 1
 }
 expected_worker_call="$worker_root|$worker_root/node_modules/tsx/dist/cli.mjs $worker_root/apps/worker/src/index.ts"
@@ -583,8 +613,18 @@ actual_worker_call="$(cat "$worker_capture_path")"
 }
 
 : >"$worker_capture_path"
-mkdir -p "$worker_stale_lock"
-printf '%s\n' "$$" >"$worker_stale_lock/pid"
+worker_lock_ready="$temporary_directory/worker-lock-ready"
+/usr/bin/lockf -k -t 0 "$worker_stale_lock" /bin/bash -c \
+  'printf ready >"$1"; sleep 2' lock-holder "$worker_lock_ready" &
+worker_lock_holder=$!
+for _attempt in {1..40}; do
+  [[ -e "$worker_lock_ready" ]] && break
+  sleep 0.05
+done
+[[ -e "$worker_lock_ready" ]] || {
+  printf 'worker lock holder did not start\n' >&2
+  exit 1
+}
 worker_lock_output="$(HOME="$temporary_directory/worker-home" \
   WORKER_SCHEDULE_CAPTURE_PATH="$worker_capture_path" \
   bash "$SCHEDULE_ROOT/macos-worker/run.sh" \
@@ -594,21 +634,7 @@ worker_lock_output="$(HOME="$temporary_directory/worker-home" \
   printf 'worker mutual-exclusion lock did not skip an overlapping run\n' >&2
   exit 1
 }
-rm -rf "$worker_stale_lock"
-
-: >"$worker_capture_path"
-mkdir -p "$worker_stale_lock"
-worker_empty_lock_output="$(HOME="$temporary_directory/worker-home" \
-  WORKER_SCHEDULE_CAPTURE_PATH="$worker_capture_path" \
-  bash "$SCHEDULE_ROOT/macos-worker/run.sh" \
-    --project-root "$worker_root" --node "$worker_fake_node" 2>&1)"
-[[ "$worker_empty_lock_output" == *'"phase":"lock","status":"skipped"'* \
-  && ! -s "$worker_capture_path" \
-  && -d "$worker_stale_lock" && ! -e "$worker_stale_lock/pid" ]] || {
-  printf 'worker stole a lock whose owner publication was still pending\n' >&2
-  exit 1
-}
-rm -rf "$worker_stale_lock"
+wait "$worker_lock_holder"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   worker_install_output="$(HOME="$temporary_directory/worker-home" \

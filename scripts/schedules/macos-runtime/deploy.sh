@@ -43,12 +43,11 @@ DISABLED_STATE_OUTPUT=""
 LAUNCH_DOMAIN="gui/$(id -u)"
 LOCK_PARENT="$HOME/Library/Caches/AIWorklog"
 DEPLOY_LOCK="$LOCK_PARENT/runtime-deploy.lock"
-BARRIER_LOCKS=(
-  "$LOCK_PARENT/schedule.lock"
-  "$LOCK_PARENT/worker-schedule.lock"
-)
-ACQUIRED_LOCKS=()
-ACQUIRED_LOCK_COUNT=0
+SCHEDULE_LOCK="$LOCK_PARENT/schedule.lock"
+WORKER_LOCK="$LOCK_PARENT/worker-schedule.lock"
+DEPLOY_LOCK_OPEN="false"
+SCHEDULE_LOCK_OPEN="false"
+WORKER_LOCK_OPEN="false"
 
 safe_event() {
   printf '{"event":"ai-worklog-runtime-deploy","phase":"%s","status":"%s"}\n' \
@@ -139,66 +138,12 @@ wait_for_process_exit() {
   return 1
 }
 
-acquire_barrier_lock() {
-  local lock_directory="$1"
-  local existing_pid=""
-  local stale_directory
-  local lock_name
-
-  if mkdir "$lock_directory" 2>/dev/null; then
-    if printf '%s\n' "$$" >"$lock_directory/pid"; then
-      return 0
-    fi
-    rm -f "$lock_directory/pid"
-    rmdir "$lock_directory" 2>/dev/null || true
-    return 1
+prepare_lock_file() {
+  local lock_file="$1"
+  if [[ -e "$lock_file" || -L "$lock_file" ]]; then
+    [[ -f "$lock_file" && ! -L "$lock_file" ]] || return 1
+    [[ "$(file_owner "$lock_file")" == "$(id -u)" ]] || return 1
   fi
-
-  [[ -d "$lock_directory" && ! -L "$lock_directory" ]] || return 1
-  IFS= read -r existing_pid 2>/dev/null <"$lock_directory/pid" || true
-  if [[ -z "$existing_pid" ]]; then
-    sleep 1
-    IFS= read -r existing_pid 2>/dev/null <"$lock_directory/pid" || true
-  fi
-  [[ "$existing_pid" =~ ^[1-9][0-9]*$ && "$existing_pid" != "1" ]] || return 1
-  if kill -0 "$existing_pid" >/dev/null 2>&1; then
-    return 1
-  fi
-
-  lock_name="${lock_directory##*/}"
-  stale_directory="$LOCK_PARENT/${lock_name}.stale.deploy.$$.$RANDOM"
-  [[ ! -e "$stale_directory" && ! -L "$stale_directory" ]] || return 1
-  mv "$lock_directory" "$stale_directory" 2>/dev/null || return 1
-  [[ -d "$stale_directory" && ! -L "$stale_directory" ]] || return 1
-  rm -rf "$stale_directory"
-  mkdir "$lock_directory" 2>/dev/null || return 1
-  if printf '%s\n' "$$" >"$lock_directory/pid"; then
-    return 0
-  fi
-  rm -f "$lock_directory/pid"
-  rmdir "$lock_directory" 2>/dev/null || true
-  return 1
-}
-
-release_barrier_locks() {
-  local position lock_directory owner_pid
-  local released="true"
-  for ((position = ACQUIRED_LOCK_COUNT - 1; position >= 0; position -= 1)); do
-    lock_directory="${ACQUIRED_LOCKS[$position]}"
-    owner_pid=""
-    if [[ -d "$lock_directory" && ! -L "$lock_directory" ]]; then
-      IFS= read -r owner_pid 2>/dev/null <"$lock_directory/pid" || true
-      if [[ "$owner_pid" == "$$" ]]; then
-        rm -f "$lock_directory/pid" || released="false"
-        rmdir "$lock_directory" 2>/dev/null || released="false"
-      else
-        released="false"
-      fi
-    elif [[ -e "$lock_directory" || -L "$lock_directory" ]]; then
-      released="false"
-    fi
-  done
-  [[ "$released" == "true" ]]
 }
 
 bootstrap_service_index() {
@@ -322,11 +267,9 @@ cleanup() {
   if [[ "$status" -eq 0 ]]; then
     remove_managed_temporary_directory "$BACKUP_DIRECTORY" || status=1
   fi
-  release_barrier_locks || {
-    if [[ "$status" -eq 0 ]]; then
-      status=1
-    fi
-  }
+  if [[ "$WORKER_LOCK_OPEN" == "true" ]]; then exec 9>&-; fi
+  if [[ "$SCHEDULE_LOCK_OPEN" == "true" ]]; then exec 8>&-; fi
+  if [[ "$DEPLOY_LOCK_OPEN" == "true" ]]; then exec 7>&-; fi
   exit "$status"
 }
 
@@ -412,9 +355,11 @@ else
   mkdir -p "$LOCK_PARENT" || fail_deploy
 fi
 chmod 700 "$LOCK_PARENT"
-acquire_barrier_lock "$DEPLOY_LOCK" || fail_deploy
-ACQUIRED_LOCKS[$ACQUIRED_LOCK_COUNT]="$DEPLOY_LOCK"
-ACQUIRED_LOCK_COUNT=$((ACQUIRED_LOCK_COUNT + 1))
+prepare_lock_file "$DEPLOY_LOCK" || fail_deploy
+exec 7>"$DEPLOY_LOCK" || fail_deploy
+DEPLOY_LOCK_OPEN="true"
+chmod 600 "$DEPLOY_LOCK"
+/usr/bin/lockf -s -t 0 7 || fail_deploy
 
 CURRENT_PHASE="staging"
 mkdir -p "$MANAGED_ROOT"
@@ -475,11 +420,16 @@ for ((index = 0; index < ${#LABELS[@]}; index += 1)); do
 done
 
 CURRENT_PHASE="schedule-barrier"
-for ((position = 0; position < ${#BARRIER_LOCKS[@]}; position += 1)); do
-  acquire_barrier_lock "${BARRIER_LOCKS[$position]}" || fail_deploy
-  ACQUIRED_LOCKS[$ACQUIRED_LOCK_COUNT]="${BARRIER_LOCKS[$position]}"
-  ACQUIRED_LOCK_COUNT=$((ACQUIRED_LOCK_COUNT + 1))
-done
+prepare_lock_file "$SCHEDULE_LOCK" || fail_deploy
+exec 8>"$SCHEDULE_LOCK" || fail_deploy
+SCHEDULE_LOCK_OPEN="true"
+chmod 600 "$SCHEDULE_LOCK"
+/usr/bin/lockf -s -t 0 8 || fail_deploy
+prepare_lock_file "$WORKER_LOCK" || fail_deploy
+exec 9>"$WORKER_LOCK" || fail_deploy
+WORKER_LOCK_OPEN="true"
+chmod 600 "$WORKER_LOCK"
+/usr/bin/lockf -s -t 0 9 || fail_deploy
 
 CURRENT_PHASE="service-suspend"
 SERVICES_SUSPENDED="true"
