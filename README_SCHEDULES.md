@@ -39,11 +39,13 @@ npm run lan:http:configure -- --host 172.18.209.21 --port 3000
 npm run collector:configure:macos
 chmod 600 .env.local
 npm run build
-bash scripts/schedules/macos-runtime/deploy.sh --dry-run
-bash scripts/schedules/macos-runtime/deploy.sh
+bash scripts/schedules/macos-runtime/deploy.sh \
+  --node "$(command -v node)" --dry-run
+bash scripts/schedules/macos-runtime/deploy.sh \
+  --node "$(command -v node)"
 ```
 
-macOS 不允许后台 LaunchAgent 直接读取 Desktop 等隐私目录，因此部署脚本会把只用于运行的副本同步到 `~/Library/Application Support/AIWorklog/app`。开发和 Git 仍在原仓库；每次拉取代码、改配置或重新构建后，再运行一次部署脚本。
+macOS 不允许后台 LaunchAgent 直接读取 Desktop 等隐私目录，因此部署脚本会把只用于运行的副本同步到 `~/Library/Application Support/AIWorklog/app`。开发和 Git 仍在原仓库；每次拉取代码、改配置或重新构建后，再运行一次部署脚本。部署器先取得独占部署锁并拒绝软链接目标，再在同一目录完成临时副本与 Web 配置校验；切换前会占用采集器和 Worker 共用的互斥锁、临时禁用新触发，仅停止 Web，随后恢复服务和调度。若新 Web 未能返回预期的 `401`，会回滚旧副本。采集器或 Worker 正在执行时，部署器无法取得互斥锁并会安全退出，不会中断当次任务。
 
 从运行副本验证并安装登录后常驻的 LaunchAgent：
 

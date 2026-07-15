@@ -392,6 +392,84 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     printf 'web uninstaller dry-run failed\n' >&2
     exit 1
   }
+
+  runtime_project="$temporary_directory/runtime project"
+  runtime_fake_node="$temporary_directory/path with spaces/fake-runtime-node"
+  mkdir -p \
+    "$runtime_project/node_modules/next/dist/bin" \
+    "$runtime_project/apps/web/.next"
+  : >"$runtime_project/node_modules/next/dist/bin/next"
+  printf 'runtime-test-build\n' >"$runtime_project/apps/web/.next/BUILD_ID"
+  printf 'APP_BASE_URL=http://172.18.209.21:3000\n' >"$runtime_project/.env.local"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$runtime_fake_node"
+  chmod 600 "$runtime_project/.env.local"
+  chmod 700 "$runtime_fake_node"
+
+  runtime_nested_project="$temporary_directory/runtime nested project"
+  runtime_nested_target="$temporary_directory/runtime nested target"
+  runtime_nested_home="$temporary_directory/runtime-nested-home"
+  mkdir -p \
+    "$runtime_nested_project/node_modules" \
+    "$runtime_nested_project/apps/web/.next" \
+    "$runtime_nested_target/dist/bin" \
+    "$runtime_nested_home"
+  ln -s "$runtime_nested_target" "$runtime_nested_project/node_modules/next"
+  : >"$runtime_nested_target/dist/bin/next"
+  printf 'runtime-test-build\n' >"$runtime_nested_project/apps/web/.next/BUILD_ID"
+  printf 'APP_BASE_URL=http://172.18.209.21:3000\n' \
+    >"$runtime_nested_project/.env.local"
+  chmod 600 "$runtime_nested_project/.env.local"
+  if HOME="$runtime_nested_home" \
+    bash "$SCHEDULE_ROOT/macos-runtime/deploy.sh" \
+      --project-root "$runtime_nested_project" --node "$runtime_fake_node" --dry-run \
+      >"$temporary_directory/runtime-nested-symlink.out" 2>&1; then
+    printf 'runtime deploy accepted a required file through an escaping parent symlink\n' >&2
+    exit 1
+  fi
+
+  runtime_symlink_home="$temporary_directory/runtime-symlink-home"
+  runtime_symlink_target="$temporary_directory/runtime-symlink-target"
+  mkdir -p "$runtime_symlink_home/Library/Application Support" "$runtime_symlink_target"
+  ln -s "$runtime_symlink_target" \
+    "$runtime_symlink_home/Library/Application Support/AIWorklog"
+  if HOME="$runtime_symlink_home" \
+    bash "$SCHEDULE_ROOT/macos-runtime/deploy.sh" \
+      --project-root "$runtime_project" --node "$runtime_fake_node" --dry-run \
+      >"$temporary_directory/runtime-symlink.out" 2>&1; then
+    printf 'runtime deploy accepted a symlinked managed root\n' >&2
+    exit 1
+  fi
+
+  runtime_destination_home="$temporary_directory/runtime-destination-home"
+  runtime_destination_target="$temporary_directory/runtime-destination-target"
+  mkdir -p \
+    "$runtime_destination_home/Library/Application Support/AIWorklog" \
+    "$runtime_destination_target"
+  ln -s "$runtime_destination_target" \
+    "$runtime_destination_home/Library/Application Support/AIWorklog/app"
+  if HOME="$runtime_destination_home" \
+    bash "$SCHEDULE_ROOT/macos-runtime/deploy.sh" \
+      --project-root "$runtime_project" --node "$runtime_fake_node" --dry-run \
+      >"$temporary_directory/runtime-destination-symlink.out" 2>&1; then
+    printf 'runtime deploy accepted a symlinked destination\n' >&2
+    exit 1
+  fi
+
+  grep -Fq '.app.stage.XXXXXX' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'launchctl disable' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'launchctl print-disabled' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'service_is_disabled' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'launchctl bootout' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'launchctl bootstrap' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'schedule.lock' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'worker-schedule.lock' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'runtime-deploy.lock' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'acquire_barrier_lock' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'release_barrier_locks' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'reenable_disabled_services' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq 'rollback_ok' "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq -- "--exclude '.data'" "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
+  grep -Fq -- "--exclude '开发Promot.md'" "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
 fi
 
 worker_root="$temporary_directory/worker root"
