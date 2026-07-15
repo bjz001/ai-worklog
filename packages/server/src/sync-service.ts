@@ -16,7 +16,7 @@ import type {
   ResultSetHeader,
   RowDataPacket
 } from "mysql2/promise";
-import type { DeviceIdentity } from "./auth";
+import { InvalidAuthorizationError, type DeviceIdentity } from "./auth";
 import { validateSanitizedEvents } from "./input-security";
 import { projectDisplayName, workDateInTimeZone } from "./presentation";
 
@@ -1350,6 +1350,39 @@ export interface CommitSyncBatchOptions {
   requestId: string;
 }
 
+interface CredentialLockRow extends RowDataPacket {
+  id: string;
+}
+
+export async function lockActiveDeviceCredential(options: {
+  connection: Pick<PoolConnection, "execute">;
+  identity: DeviceIdentity;
+}): Promise<void> {
+  const [deviceRows] = await options.connection.execute<CredentialLockRow[]>(
+    `SELECT id
+       FROM devices
+      WHERE id = ? AND account_id = ? AND status = 'ACTIVE'
+      FOR UPDATE`,
+    [options.identity.deviceId, options.identity.accountId]
+  );
+  if (!deviceRows[0]) throw new InvalidAuthorizationError();
+
+  const [tokenRows] = await options.connection.execute<CredentialLockRow[]>(
+    `SELECT id
+       FROM device_tokens
+      WHERE id = ? AND account_id = ? AND device_id = ?
+        AND revoked_at IS NULL
+        AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP(6))
+      FOR UPDATE`,
+    [
+      options.identity.deviceTokenId,
+      options.identity.accountId,
+      options.identity.deviceId
+    ]
+  );
+  if (!tokenRows[0]) throw new InvalidAuthorizationError();
+}
+
 export function isRetryableTransactionError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const value = error as { errno?: unknown; code?: unknown };
@@ -1382,6 +1415,10 @@ async function commitSyncBatchAttempt(
 
   try {
     await connection.beginTransaction();
+    await lockActiveDeviceCredential({
+      connection,
+      identity: options.identity
+    });
     await connection.execute<ResultSetHeader>(
       `INSERT INTO sync_batches
          (id, account_id, device_id, batch_id, protocol_version, source_type,

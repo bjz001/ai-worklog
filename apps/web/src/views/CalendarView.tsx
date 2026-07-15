@@ -1,9 +1,9 @@
 "use client";
 
 import type { CalendarDayView, CalendarResponse } from "@ai-worklog/contracts";
-import Link from "next/link";
 import { useMemo, useState } from "react";
 
+import { CalendarSummaryDetail } from "@/components/calendar/CalendarSummaryDetail";
 import { useDetailDrawer } from "@/components/shell/DrawerContext";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -14,7 +14,6 @@ import {
   PartialNotice,
   Surface
 } from "@/components/ui/PageElements";
-import { StatusChip } from "@/components/ui/StatusChip";
 import { useApiResource } from "@/hooks/use-api-resource";
 import { collectionState } from "@/lib/api-client";
 import { formatNumber, formatWorkDate } from "@/lib/presenters";
@@ -61,27 +60,10 @@ export function CalendarView() {
   });
 
   const showDay = (date: string, activity?: CalendarDayView) => {
-    const summary = activity ? summaryMeta(activity.summaryStatus) : summaryMeta("missing");
     openDrawer({
       title: formatWorkDate(date),
       subtitle: activity ? `${activity.promptCount} 条 Prompt · ${activity.projectCount} 个项目` : "当天暂无同步记录",
-      content: (
-        <div className="stack">
-          <section className="drawer-section">
-            <h3>工作活动</h3>
-            <div className="metrics">
-              <div className="metric"><span className="metric__label">Prompt</span><strong>{activity?.promptCount ?? 0}</strong></div>
-              <div className="metric"><span className="metric__label">项目</span><strong>{activity?.projectCount ?? 0}</strong></div>
-            </div>
-          </section>
-          <section className="drawer-section">
-            <h3>完整性</h3>
-            <StatusChip tone={summary.tone} icon={<Icon name={summary.icon} />}>{summary.label}</StatusChip>
-            {activity?.hasSyncError ? <p className="muted">当天存在同步异常，结论可能缺少部分设备数据。</p> : null}
-          </section>
-          <Link className="button button--primary" href={`/prompts?date=${encodeURIComponent(date)}`}>查看当天 Prompt<Icon name="chevron-right" /></Link>
-        </div>
-      )
+      content: <CalendarSummaryDetail activity={activity} date={date} onGenerated={reload} />
     });
   };
 

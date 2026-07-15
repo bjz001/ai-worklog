@@ -1,11 +1,76 @@
 import { describe, expect, it } from "vitest";
 import {
+  DeviceCreateSchema,
+  DeviceEnrollmentResponseSchema,
+  DeviceTokenRotateSchema,
   MAX_LEGACY_EVENT_ALIASES,
   LlmSettingsResponseSchema,
   LlmSettingsUpdateSchema,
   SyncEventSchema,
   SyncBatchRequestSchema
 } from "./index";
+
+describe("device enrollment contracts", () => {
+  it("accepts only a bounded Mac or Windows registration", () => {
+    expect(DeviceCreateSchema.safeParse({
+      name: "  Office Mac  ",
+      platform: "MACOS"
+    }).data).toEqual({ name: "Office Mac", platform: "MACOS" });
+    expect(DeviceCreateSchema.safeParse({
+      name: "Windows\nPowerShell",
+      platform: "WINDOWS"
+    }).success).toBe(false);
+    expect(DeviceCreateSchema.safeParse({
+      name: "Linux server",
+      platform: "LINUX"
+    }).success).toBe(false);
+    expect(DeviceCreateSchema.safeParse({
+      name: "Mac",
+      platform: "MACOS",
+      token: "must-never-be-client-supplied"
+    }).success).toBe(false);
+  });
+
+  it("uses an empty strict body for token rotation", () => {
+    expect(DeviceTokenRotateSchema.safeParse({}).success).toBe(true);
+    expect(DeviceTokenRotateSchema.safeParse({ token: "client-value" }).success)
+      .toBe(false);
+  });
+
+  it("returns a plaintext token only in the one-time enrollment response", () => {
+    const response = {
+      data: {
+        device: {
+          id: "device_abc123",
+          name: "Office Mac",
+          os: "MACOS",
+          status: "WAITING",
+          lastSeenAt: null,
+          lastSyncAt: null,
+          promptCount: 0
+        },
+        enrollment: {
+          accountId: "account_demo",
+          deviceId: "device_abc123",
+          deviceToken: "a".repeat(64),
+          syncUrl: "http://172.18.209.21:3000/api/v1/sync/batches"
+        }
+      }
+    };
+
+    expect(DeviceEnrollmentResponseSchema.safeParse(response).success).toBe(true);
+    expect(DeviceEnrollmentResponseSchema.safeParse({
+      ...response,
+      data: {
+        ...response.data,
+        enrollment: {
+          ...response.data.enrollment,
+          tokenHmac: "b".repeat(64)
+        }
+      }
+    }).success).toBe(false);
+  });
+});
 
 describe("SyncBatchRequestSchema", () => {
   it("rejects oversized batches", () => {

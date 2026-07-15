@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { Pool, RowDataPacket } from "mysql2/promise";
+import type { Pool, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { z } from "zod";
 
 const ServerIdentitySchema = z.object({
@@ -88,14 +88,25 @@ export async function authenticateDevice(options: {
   const row = rows[0];
   if (!row) throw new InvalidAuthorizationError();
 
-  await options.pool.execute(
+  const [touch] = await options.pool.execute<ResultSetHeader>(
     `UPDATE device_tokens dt
-       JOIN devices d ON d.id = dt.device_id
+       JOIN devices d
+         ON d.id = dt.device_id AND d.account_id = dt.account_id
         SET dt.last_used_at = UTC_TIMESTAMP(6),
             d.last_seen_at = UTC_TIMESTAMP(6)
-      WHERE dt.id = ? AND d.id = ?`,
-    [row.token_id, row.device_id]
+      WHERE dt.id = ?
+        AND dt.account_id = ?
+        AND dt.device_id = ?
+        AND dt.token_hmac = ?
+        AND dt.revoked_at IS NULL
+        AND (dt.expires_at IS NULL OR dt.expires_at > UTC_TIMESTAMP(6))
+        AND d.status = 'ACTIVE'`,
+    [row.token_id, row.account_id, row.device_id, tokenHmac]
   );
+  // This is a multi-table UPDATE, so MySQL may report one changed row per
+  // table. Zero means the credential no longer satisfied the active-token
+  // predicates after any concurrent rotation finished.
+  if (touch.affectedRows < 1) throw new InvalidAuthorizationError();
 
   return {
     accountId: row.account_id,

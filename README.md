@@ -86,6 +86,10 @@ node scripts/create-mysql-app-user.mjs
 
 ### 设备端配置
 
+推荐在工作台的“同步中心”点击“添加设备”，选择 macOS 或 Windows 后复制页面生成的配置、验证和计划任务命令。设备 Token 只在创建或重新生成配置时显示一次，不会写入可复制命令；执行命令后，再在隐藏输入提示中粘贴 Token。关闭面板前应完成配置，丢失后只能轮换新 Token，且旧 Token 会立即失效。
+
+在目标设备上必须先克隆本仓库并安装 npm 依赖，然后在仓库根目录执行页面命令。页面不会远程操作另一台电脑。
+
 每台机器使用独立配置文件，权限仅限当前用户：
 
 ```dotenv
@@ -122,7 +126,7 @@ npm run collector -- sync
 npm run collector -- status
 ```
 
-采集器对非 localhost 地址强制 HTTPS。请不要把设备 Token 放进命令行参数、任务调度器参数或 Git。
+采集器默认对非 localhost 地址强制 HTTPS；只有显式开启风险确认时才接受私网 IPv4 HTTP。请不要把设备 Token 放进命令行参数、任务调度器参数或 Git。
 
 ## 每晚自动同步
 
@@ -167,12 +171,16 @@ npm run llm:key:init
 - `GET /api/v1/calendar?month=YYYY-MM`
 - `GET /api/v1/skills`
 - `GET /api/v1/sync`
+- `POST /api/v1/devices`：登记设备并一次性返回设备凭证。
+- `POST /api/v1/devices/:id/token`：撤销旧凭证并一次性返回新凭证。
+- `GET /api/v1/summaries?date=YYYY-MM-DD`
+- `POST /api/v1/summaries`：手动请求 LLM 生成新的当日总结 Revision。
 - `GET /api/v1/privacy`
 - `GET /api/v1/llm-settings`
 - `PUT /api/v1/llm-settings`
 - `POST /api/v1/llm-settings/test`
 
-页面和读 API 使用 `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` 的 Basic Auth；公网或不可信网络部署必须置于 HTTPS 之后。仅在可信局域网自用时，可以按 [README_SCHEDULES.md](./README_SCHEDULES.md) 显式启用受限的私网 HTTP。同步接口不使用工作台密码，而使用每台设备的独立 Token。
+页面和读 API 使用 `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` 的 Basic Auth；公网或不可信网络部署必须置于 HTTPS 之后。密码默认至少 16 位；只有可信局域网自用且明确接受风险时，才可对私网 HTTP 设置 `DASHBOARD_ALLOW_WEAK_PASSWORD=true`。仅在可信局域网自用时，可以按 [README_SCHEDULES.md](./README_SCHEDULES.md) 显式启用受限的私网 HTTP。同步接口不使用工作台密码，而使用每台设备的独立 Token。
 
 ## 安全边界
 

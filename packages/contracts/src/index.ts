@@ -197,6 +197,28 @@ export type LlmConnectionTestResponse = z.infer<
   typeof LlmConnectionTestResponseSchema
 >;
 
+export const DevicePlatformSchema = z.enum(["MACOS", "WINDOWS"]);
+
+export const DeviceCreateSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .refine(
+        (value) => Array.from(value).every((character) => {
+          const codePoint = character.codePointAt(0) ?? 0;
+          return codePoint >= 32 && codePoint !== 127;
+        }),
+        { message: "Device name must not contain control characters" }
+      ),
+    platform: DevicePlatformSchema
+  })
+  .strict();
+
+export const DeviceTokenRotateSchema = z.object({}).strict();
+
 export const DeviceStatusSchema = z.enum([
   "NOT_CONFIGURED",
   "WAITING",
@@ -217,6 +239,26 @@ export const DeviceViewSchema = z.object({
   promptCount: z.number().int().nonnegative()
 });
 
+export const DeviceEnrollmentSchema = z
+  .object({
+    accountId: z.string().regex(/^[A-Za-z0-9_-]{3,64}$/),
+    deviceId: z.string().regex(/^[A-Za-z0-9_-]{3,64}$/),
+    deviceToken: z.string().regex(/^[a-f0-9]{64}$/),
+    syncUrl: z.string().url()
+  })
+  .strict();
+
+export const DeviceEnrollmentResponseSchema = z
+  .object({
+    data: z
+      .object({
+        device: DeviceViewSchema,
+        enrollment: DeviceEnrollmentSchema
+      })
+      .strict()
+  })
+  .strict();
+
 export const ProjectViewSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -228,26 +270,65 @@ export const ProjectViewSchema = z.object({
   recentPrompt: z.string().nullable()
 });
 
-export const EvidenceViewSchema = z.object({
-  id: z.string(),
-  excerpt: z.string(),
-  projectName: z.string(),
-  occurredAt: z.string()
-});
+export const EvidenceViewSchema = z
+  .object({
+    id: z.string(),
+    excerpt: z.string(),
+    projectName: z.string(),
+    occurredAt: DateTimeSchema
+  })
+  .strict();
 
-export const SummaryViewSchema = z.object({
-  id: z.string(),
-  workDate: z.string(),
-  status: z.enum(["complete", "partial"]),
-  highlights: z.array(
-    z.object({ text: z.string(), evidenceIds: z.array(z.string()) })
-  ),
-  projectProgress: z.array(
-    z.object({ text: z.string(), evidenceIds: z.array(z.string()) })
-  ),
-  completenessNote: z.string(),
-  evidence: z.array(EvidenceViewSchema)
-});
+const SummaryStatementSchema = z
+  .object({
+    text: z.string(),
+    evidenceIds: z.array(z.string())
+  })
+  .strict();
+
+export const WorkDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  });
+
+export const SummaryViewSchema = z
+  .object({
+    id: z.string(),
+    workDate: WorkDateSchema,
+    status: z.enum(["complete", "partial"]),
+    highlights: z.array(SummaryStatementSchema),
+    projectProgress: z.array(SummaryStatementSchema),
+    decisions: z.array(SummaryStatementSchema),
+    blockers: z.array(SummaryStatementSchema),
+    nextActions: z.array(SummaryStatementSchema),
+    completenessNote: z.string(),
+    evidence: z.array(EvidenceViewSchema)
+  })
+  .strict();
+
+export const SummaryGenerationRequestSchema = z
+  .object({ workDate: WorkDateSchema })
+  .strict();
+
+export const SummaryResponseSchema = z
+  .object({
+    data: z.object({ summary: SummaryViewSchema.nullable() }).strict()
+  })
+  .strict();
+
+export const SummaryGenerationResponseSchema = z
+  .object({
+    data: z
+      .object({
+        summary: SummaryViewSchema,
+        generated: z.boolean()
+      })
+      .strict()
+  })
+  .strict();
 
 export const PromptViewSchema = z.object({
   id: z.string(),
@@ -297,9 +378,19 @@ export const SyncRunViewSchema = z.object({
 });
 
 export type DeviceView = z.infer<typeof DeviceViewSchema>;
+export type DevicePlatform = z.infer<typeof DevicePlatformSchema>;
+export type DeviceCreateInput = z.infer<typeof DeviceCreateSchema>;
+export type DeviceEnrollment = z.infer<typeof DeviceEnrollmentSchema>;
+export type DeviceEnrollmentResponse = z.infer<
+  typeof DeviceEnrollmentResponseSchema
+>;
 export type ProjectView = z.infer<typeof ProjectViewSchema>;
 export type EvidenceView = z.infer<typeof EvidenceViewSchema>;
 export type SummaryView = z.infer<typeof SummaryViewSchema>;
+export type SummaryResponse = z.infer<typeof SummaryResponseSchema>;
+export type SummaryGenerationResponse = z.infer<
+  typeof SummaryGenerationResponseSchema
+>;
 export type PromptView = z.infer<typeof PromptViewSchema>;
 export type CalendarDayView = z.infer<typeof CalendarDayViewSchema>;
 export type SkillCandidateView = z.infer<typeof SkillCandidateViewSchema>;

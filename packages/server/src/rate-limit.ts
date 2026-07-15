@@ -65,3 +65,18 @@ export const llmConnectionTestRateLimiter = new InMemoryRateLimiter({
   windowMs: 60_000,
   maxKeys: 1_000
 });
+
+// Manual summaries make a billable LLM request and can create a new revision.
+export const summaryGenerationRateLimiter = new InMemoryRateLimiter({
+  limit: 10,
+  windowMs: 60_000,
+  maxKeys: 1_000
+});
+
+// Device enrollment returns a one-time credential. Bound accidental retries
+// and scripted rotations separately from ordinary dashboard reads.
+export const deviceMutationRateLimiter = new InMemoryRateLimiter({
+  limit: 10,
+  windowMs: 60_000,
+  maxKeys: 1_000
+});

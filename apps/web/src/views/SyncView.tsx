@@ -1,7 +1,9 @@
 "use client";
 
-import type { SyncResponse, SyncRunView } from "@ai-worklog/contracts";
+import type { DeviceView, SyncResponse, SyncRunView } from "@ai-worklog/contracts";
 
+import { DeviceEnrollmentPanel } from "@/components/devices/DeviceEnrollmentPanel";
+import { DeviceList } from "@/components/devices/DeviceList";
 import { useDetailDrawer } from "@/components/shell/DrawerContext";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -16,7 +18,7 @@ import {
 import { StatusChip } from "@/components/ui/StatusChip";
 import { useApiResource } from "@/hooks/use-api-resource";
 import { collectionState } from "@/lib/api-client";
-import { deviceStatusMeta, formatDateTime, formatNumber } from "@/lib/presenters";
+import { formatDateTime, formatNumber } from "@/lib/presenters";
 
 function runStatusMeta(status: SyncRunView["status"]) {
   if (status === "SUCCESS") return { label: "成功", tone: "success" as const, icon: "check" as const };
@@ -35,6 +37,14 @@ export function SyncView() {
   );
   const state = collectionState({ loading, error, count, partial });
   const deviceNames = new Map(sync?.devices.map((device) => [device.id, device.name]) ?? []);
+
+  const showEnrollment = (device?: DeviceView) => {
+    openDrawer({
+      title: device ? `${device.name} · ${device.status === "NOT_CONFIGURED" ? "生成配置" : "重新生成配置"}` : "添加同步设备",
+      subtitle: device ? "新 Token 只会显示一次" : "登记 macOS 或 Windows 采集器",
+      content: <DeviceEnrollmentPanel device={device} onComplete={reload} />
+    });
+  };
 
   const showRun = (run: SyncRunView) => {
     const status = runStatusMeta(run.status);
@@ -70,12 +80,12 @@ export function SyncView() {
 
   if (state === "loading") return <><PageHeader title="同步中心" description="管理设备、数据源与增量同步状态" /><LoadingState rows={6} /></>;
   if (state === "error" && error) return <><PageHeader title="同步中心" description="管理设备、数据源与增量同步状态" /><ErrorState error={error} onRetry={reload} /></>;
-  if (state === "empty" || !sync) return <><PageHeader title="同步中心" description="管理设备、数据源与增量同步状态" /><EmptyState action={<button className="button button--primary" onClick={reload} type="button"><Icon name="refresh" />检查设备</button>} description="在 Windows 或 macOS 采集器中完成配对后，设备会出现在这里。" icon="sync" title="尚未连接设备" /></>;
+  if (state === "empty" || !sync) return <><PageHeader title="同步中心" description="管理设备、数据源与增量同步状态" /><EmptyState action={<button className="button button--primary" onClick={() => showEnrollment()} type="button"><Icon name="device" />添加设备</button>} description="在线登记 Windows 或 macOS 设备，再按指引完成首次同步。" icon="sync" title="尚未连接设备" /></>;
 
   return (
     <>
       <PageHeader
-        actions={<button className="button button--primary" onClick={reload} type="button"><Icon name="refresh" />刷新状态</button>}
+        actions={<><button className="button button--secondary" onClick={() => showEnrollment()} type="button"><Icon name="device" />添加设备</button><button className="button button--primary" onClick={reload} type="button"><Icon name="refresh" />刷新状态</button></>}
         description="每台设备独立采集与补传，单机失败不会阻断其他设备"
         title="同步中心"
       />
@@ -90,20 +100,7 @@ export function SyncView() {
 
       <div className="page-grid page-grid--two sync-grid">
         <Surface title="设备" description={`${formatNumber(sync.devices.length)} 台已登记设备`}>
-          <div className="simple-list">
-            {sync.devices.map((device) => {
-              const status = deviceStatusMeta(device.status);
-              return (
-                <div className="simple-row" key={device.id}>
-                  <div className="device-name">
-                    <span className="device-icon"><Icon name="device" /></span>
-                    <div className="simple-row__copy"><strong>{device.name}</strong><span>{device.os === "MACOS" ? "macOS" : device.os === "WINDOWS" ? "Windows" : "其他系统"} · {formatNumber(device.promptCount)} 条 Prompt</span></div>
-                  </div>
-                  <div className="device-status"><StatusChip tone={status.tone} icon={<Icon name={status.icon} />}>{status.label}</StatusChip><span className="muted">{formatDateTime(device.lastSyncAt)}</span></div>
-                </div>
-              );
-            })}
-          </div>
+          <DeviceList devices={sync.devices} onConfigure={showEnrollment} />
         </Surface>
 
         <Surface title="最近运行" description="日志不展示 Prompt 正文或敏感路径">

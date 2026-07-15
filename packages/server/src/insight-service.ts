@@ -10,7 +10,11 @@ import type {
   RowDataPacket
 } from "mysql2/promise";
 import { accountTimeZone } from "./query-service";
-import { inferEvidenceIntent, workDateInTimeZone } from "./presentation";
+import {
+  inferEvidenceIntent,
+  utcRangeForWorkDate,
+  workDateInTimeZone
+} from "./presentation";
 import { parseLlmEncryptionKey } from "./llm-crypto";
 import {
   getLlmSettingsView,
@@ -18,6 +22,7 @@ import {
 } from "./llm-settings-service";
 import {
   generateLlmDailySummary,
+  type GeneratedLlmSummary,
   type SummaryEvidence
 } from "./llm-summary";
 import type { LlmFetcher, LlmResolver } from "./llm-client";
@@ -46,6 +51,7 @@ interface LatestSummaryRow extends RowDataPacket {
   id: string;
   revision: number | string;
   input_fingerprint: string;
+  content: unknown;
   is_manually_edited: number | boolean;
 }
 
@@ -104,6 +110,64 @@ export function summaryEvidenceFingerprint(
       )
       .join("|")
   );
+}
+
+type SummaryEvidenceSections = Pick<
+  GeneratedLlmSummary,
+  "highlights" | "projectProgress" | "decisions" | "blockers" | "nextActions"
+>;
+
+export function summaryEvidenceStatements(summary: SummaryEvidenceSections) {
+  return [
+    ...summary.highlights.map((statement, index) => ({
+      key: `highlight:${index}`,
+      ...statement
+    })),
+    ...summary.projectProgress.map((statement, index) => ({
+      key: `project:${index}`,
+      ...statement
+    })),
+    ...summary.decisions.map((statement, index) => ({
+      key: `decision:${index}`,
+      ...statement
+    })),
+    ...summary.blockers.map((statement, index) => ({
+      key: `blocker:${index}`,
+      ...statement
+    })),
+    ...summary.nextActions.map((statement, index) => ({
+      key: `next-action:${index}`,
+      ...statement
+    }))
+  ];
+}
+
+export function latestSummaryMatchesInput(options: {
+  latestInputFingerprint: string;
+  latestContent: unknown;
+  requestedInputFingerprint: string;
+  canonicalInputFingerprint: string;
+  isManualRegeneration: boolean;
+}): boolean {
+  if (options.latestInputFingerprint === options.requestedInputFingerprint) {
+    return true;
+  }
+  if (options.isManualRegeneration) return false;
+
+  try {
+    const content = typeof options.latestContent === "string"
+      ? JSON.parse(options.latestContent) as unknown
+      : options.latestContent;
+    return (
+      Boolean(content) &&
+      typeof content === "object" &&
+      !Array.isArray(content) &&
+      (content as Record<string, unknown>).canonicalInputFingerprint ===
+        options.canonicalInputFingerprint
+    );
+  } catch {
+    return false;
+  }
 }
 
 function broadUtcRange(workDate: string): { from: Date; until: Date } {
@@ -180,6 +244,22 @@ async function arrivedDevicesForDate(options: {
         .map((row) => row.device_id)
     )
   ];
+}
+
+export async function expectedDeviceIdsForDate(options: {
+  pool: QueryExecutor;
+  accountId: string;
+  timeZone: string;
+  workDate: string;
+}): Promise<string[]> {
+  const range = utcRangeForWorkDate(options.workDate, options.timeZone);
+  const [rows] = await options.pool.execute<DeviceRow[]>(
+    `SELECT id FROM devices
+      WHERE account_id = ? AND status = 'ACTIVE' AND created_at < ?
+      ORDER BY id`,
+    [options.accountId, range.until]
+  );
+  return rows.map((row) => row.id);
 }
 
 async function refreshSkillCandidates(options: {
@@ -265,13 +345,16 @@ async function refreshDailyInsightsLocked(options: {
   masterKey?: Buffer;
   fetcher?: LlmFetcher;
   resolver?: LlmResolver;
+  regenerationKey?: string;
 }): Promise<RefreshInsightResult> {
   const timeZone = await accountTimeZone(options.connection, options.accountId);
   const [deviceRows, evidence, arrivedDeviceIds, latestRows] = await Promise.all([
-    options.connection.execute<DeviceRow[]>(
-      "SELECT id FROM devices WHERE account_id = ? AND status = 'ACTIVE' ORDER BY id",
-      [options.accountId]
-    ),
+    expectedDeviceIdsForDate({
+      pool: options.connection,
+      accountId: options.accountId,
+      workDate: options.workDate,
+      timeZone
+    }),
     evidenceForDate({
       pool: options.connection,
       accountId: options.accountId,
@@ -285,7 +368,7 @@ async function refreshDailyInsightsLocked(options: {
       timeZone
     }),
     options.connection.execute<LatestSummaryRow[]>(
-      `SELECT id, revision, input_fingerprint, is_manually_edited
+      `SELECT id, revision, input_fingerprint, content, is_manually_edited
          FROM daily_summaries
         WHERE account_id = ? AND work_date = ?
         ORDER BY revision DESC
@@ -293,28 +376,48 @@ async function refreshDailyInsightsLocked(options: {
       [options.accountId, options.workDate]
     )
   ]);
-  const expectedDeviceIds = deviceRows[0].map((row) => row.id);
+  const expectedDeviceIds = deviceRows;
   const llmView = await getLlmSettingsView({
     pool: options.connection,
     accountId: options.accountId
   });
-  const inputFingerprint = summaryFingerprint({
-    evidenceFingerprint: summaryEvidenceFingerprint(evidence),
+  const canonicalGeneratorFingerprint = [
+    "llm-summary-v1",
+    llmView.provider,
+    llmView.baseUrl,
+    llmView.model
+  ].join(":");
+  const evidenceFingerprint = summaryEvidenceFingerprint(evidence);
+  const canonicalInputFingerprint = summaryFingerprint({
+    evidenceFingerprint,
     expectedDeviceIds,
     arrivedDeviceIds,
-    generatorFingerprint: [
-      "llm-summary-v1",
-      llmView.provider,
-      llmView.baseUrl,
-      llmView.model
-    ].join(":")
+    generatorFingerprint: canonicalGeneratorFingerprint
+  });
+  const generatorFingerprint = options.regenerationKey
+    ? `${canonicalGeneratorFingerprint}:manual:${options.regenerationKey}`
+    : canonicalGeneratorFingerprint;
+  const inputFingerprint = summaryFingerprint({
+    evidenceFingerprint,
+    expectedDeviceIds,
+    arrivedDeviceIds,
+    generatorFingerprint
   });
   const latest = latestRows[0][0];
   const skillCandidateCount = await refreshSkillCandidates({
     pool: options.connection,
     accountId: options.accountId
   });
-  if (latest?.input_fingerprint === inputFingerprint) {
+  if (
+    latest &&
+    latestSummaryMatchesInput({
+      latestInputFingerprint: latest.input_fingerprint,
+      latestContent: latest.content,
+      requestedInputFingerprint: inputFingerprint,
+      canonicalInputFingerprint,
+      isManualRegeneration: Boolean(options.regenerationKey)
+    })
+  ) {
     return {
       workDate: options.workDate,
       generated: false,
@@ -379,7 +482,11 @@ async function refreshDailyInsightsLocked(options: {
         revision,
         summary.status === "complete" ? "COMPLETE" : "PARTIAL",
         inputFingerprint,
-        JSON.stringify({ ...summary, inputFingerprint }),
+        JSON.stringify({
+          ...summary,
+          inputFingerprint,
+          canonicalInputFingerprint
+        }),
         JSON.stringify({ expectedDeviceIds, arrivedDeviceIds }),
         llmSettings.provider,
         llmSettings.model
@@ -395,16 +502,7 @@ async function refreshDailyInsightsLocked(options: {
     if (!persistedSummaryId) throw new Error("SUMMARY_NOT_FOUND");
 
     if (insert.affectedRows === 1) {
-      const statements = [
-        ...summary.highlights.map((statement, index) => ({
-          key: `highlight:${index}`,
-          ...statement
-        })),
-        ...summary.projectProgress.map((statement, index) => ({
-          key: `project:${index}`,
-          ...statement
-        }))
-      ];
+      const statements = summaryEvidenceStatements(summary);
       const evidenceById = new Map(evidence.map((item) => [item.id, item]));
       for (const statement of statements) {
         for (const evidenceId of statement.evidenceIds) {
@@ -470,6 +568,7 @@ export async function refreshDailyInsights(options: {
   masterKey?: Buffer;
   fetcher?: LlmFetcher;
   resolver?: LlmResolver;
+  regenerationKey?: string;
 }): Promise<RefreshInsightResult> {
   const connection = await options.pool.getConnection();
   const lockName = summaryLockName(options.accountId, options.workDate);
@@ -488,7 +587,8 @@ export async function refreshDailyInsights(options: {
       workDate: options.workDate,
       masterKey: options.masterKey,
       fetcher: options.fetcher,
-      resolver: options.resolver
+      resolver: options.resolver,
+      regenerationKey: options.regenerationKey
     });
   } finally {
     if (acquired) {

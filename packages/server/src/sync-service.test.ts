@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildEventId, sha256Hex } from "@ai-worklog/core";
+import { InvalidAuthorizationError } from "./auth";
 import {
   BatchConflictError,
   EventIdentityMismatchError,
@@ -7,12 +8,127 @@ import {
   classifyEventMutation,
   compatibleLegacyStoredEventIdentity,
   compatibleStoredEventIdentity,
+  commitSyncBatch,
   isRetryableTransactionError,
+  lockActiveDeviceCredential,
   markSummaryDatesDirty,
   projectIdentity,
   resolveStoredEventIdentity,
   validateEventIdentities
 } from "./sync-service";
+
+function validCommitFixture() {
+  const identity = {
+    accountId: "account-a",
+    deviceId: "device-mac",
+    deviceTokenId: "token-current"
+  };
+  const source = {
+    type: "CODEX" as const,
+    instanceId: "codex-mac",
+    parserVersion: "codex-jsonl-v4"
+  };
+  const eventIdentity = {
+    accountId: identity.accountId,
+    deviceId: identity.deviceId,
+    sourceType: source.type,
+    sourceInstanceId: source.instanceId,
+    sourceSessionId: "session-1",
+    sourceMessageId: "message-1",
+    messageIndex: 0
+  };
+  return {
+    identity,
+    validated: {
+      payload: {
+        protocolVersion: 1 as const,
+        batchId: "batch-race-check",
+        createdAt: "2026-07-15T08:00:00.000Z",
+        source,
+        events: [{
+          eventId: buildEventId(eventIdentity),
+          kind: "USER_PROMPT" as const,
+          sourceSessionId: eventIdentity.sourceSessionId,
+          sourceMessageId: eventIdentity.sourceMessageId,
+          messageIndex: eventIdentity.messageIndex,
+          occurredAt: "2026-07-15T07:59:00.000Z",
+          sourceTimeZone: "Asia/Shanghai",
+          sanitizedContent: "safe prompt",
+          contentHash: sha256Hex("safe prompt"),
+          redactionVersion: "core-v1",
+          metadata: {}
+        }]
+      },
+      payloadHash: sha256Hex("batch-race-check")
+    }
+  };
+}
+
+describe("active device credential commit lock", () => {
+  it("locks the device before revalidating and locking its exact token", async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce([[{ id: "device-mac" }], []])
+      .mockResolvedValueOnce([[{ id: "token-current" }], []]);
+    const { identity } = validCommitFixture();
+
+    await lockActiveDeviceCredential({
+      connection: { execute } as never,
+      identity
+    });
+
+    expect(String(execute.mock.calls[0]?.[0])).toContain("FROM devices");
+    expect(String(execute.mock.calls[0]?.[0])).toContain("FOR UPDATE");
+    expect(execute.mock.calls[0]?.[1]).toEqual([
+      identity.deviceId,
+      identity.accountId
+    ]);
+    expect(String(execute.mock.calls[1]?.[0])).toContain("FROM device_tokens");
+    expect(String(execute.mock.calls[1]?.[0])).toContain("revoked_at IS NULL");
+    expect(String(execute.mock.calls[1]?.[0])).toContain("expires_at > UTC_TIMESTAMP(6)");
+    expect(String(execute.mock.calls[1]?.[0])).toContain("FOR UPDATE");
+    expect(execute.mock.calls[1]?.[1]).toEqual([
+      identity.deviceTokenId,
+      identity.accountId,
+      identity.deviceId
+    ]);
+  });
+
+  it("rejects a token revoked after initial authentication before accepting a batch", async () => {
+    const execute = vi.fn(async (sql: unknown) => {
+      const statement = String(sql);
+      if (statement.includes("FROM devices")) {
+        return [[{ id: "device-mac" }], []];
+      }
+      if (statement.includes("FROM device_tokens")) return [[], []];
+      throw new Error(`unexpected query: ${statement}`);
+    });
+    const connection = {
+      beginTransaction: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      rollback: vi.fn().mockResolvedValue(undefined),
+      release: vi.fn(),
+      destroy: vi.fn(),
+      execute
+    };
+    const fixture = validCommitFixture();
+
+    await expect(commitSyncBatch({
+      pool: {
+        getConnection: vi.fn().mockResolvedValue(connection)
+      } as never,
+      identity: fixture.identity,
+      validated: fixture.validated,
+      requestId: "request-race-check"
+    })).rejects.toBeInstanceOf(InvalidAuthorizationError);
+
+    expect(connection.rollback).toHaveBeenCalledOnce();
+    expect(connection.commit).not.toHaveBeenCalled();
+    expect(connection.release).toHaveBeenCalledOnce();
+    expect(execute.mock.calls.some((call) =>
+      String(call[0]).includes("sync_batches")
+    )).toBe(false);
+  });
+});
 
 describe("markSummaryDatesDirty", () => {
   it("deduplicates dates and increments a persistent version in the caller transaction", async () => {

@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import type { Pool } from "mysql2/promise";
+import { describe, expect, it, vi } from "vitest";
 import {
+  authenticateDevice,
   InvalidAuthorizationError,
   parseBearerToken,
   parseServerIdentity
@@ -41,5 +43,47 @@ describe("parseServerIdentity", () => {
     expect(() => parseServerIdentity({ NODE_ENV: "production" })).toThrow(
       "APP_ACCOUNT_ID"
     );
+  });
+});
+
+describe("authenticateDevice", () => {
+  it("returns the identity only after the active credential touch succeeds", async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce([[{
+        token_id: "token-1",
+        account_id: "account_demo",
+        device_id: "device_demo"
+      }], []])
+      .mockResolvedValueOnce([{ affectedRows: 2 }, []]);
+
+    await expect(authenticateDevice({
+      pool: { execute } as unknown as Pool,
+      authorization: `Bearer ${"t".repeat(32)}`,
+      tokenPepper: "p".repeat(32)
+    })).resolves.toEqual({
+      accountId: "account_demo",
+      deviceId: "device_demo",
+      deviceTokenId: "token-1"
+    });
+  });
+
+  it("rejects a token revoked between lookup and credential touch", async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce([[{
+        token_id: "token-1",
+        account_id: "account_demo",
+        device_id: "device_demo"
+      }], []])
+      .mockResolvedValueOnce([{ affectedRows: 0 }, []]);
+    const pool = { execute } as unknown as Pool;
+
+    await expect(authenticateDevice({
+      pool,
+      authorization: `Bearer ${"t".repeat(32)}`,
+      tokenPepper: "p".repeat(32)
+    })).rejects.toBeInstanceOf(InvalidAuthorizationError);
+
+    expect(execute.mock.calls[1]?.[0]).toContain("dt.revoked_at IS NULL");
+    expect(execute.mock.calls[1]?.[0]).toContain("d.status = 'ACTIVE'");
   });
 });

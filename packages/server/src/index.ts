@@ -8,6 +8,12 @@ export {
   type ServerIdentity
 } from "./auth";
 export {
+  DeviceServiceError,
+  createDeviceEnrollment,
+  rotateDeviceEnrollmentToken,
+  type DeviceServicePool
+} from "./device-service";
+export {
   UnsafeEventContentError,
   validateSanitizedEvents
 } from "./input-security";
@@ -52,6 +58,7 @@ export {
   accountTimeZone,
   getCalendar,
   getDashboard,
+  getSummaryForDate,
   getPrivacyResponse,
   getProjectsResponse,
   getSkillsResponse,
@@ -62,9 +69,11 @@ export {
   listSkills
 } from "./query-service";
 export {
+  deviceMutationRateLimiter,
   InMemoryRateLimiter,
   llmConnectionTestRateLimiter,
   RateLimitError,
+  summaryGenerationRateLimiter,
   syncPreAuthRateLimiter,
   syncRateLimiter
 } from "./rate-limit";

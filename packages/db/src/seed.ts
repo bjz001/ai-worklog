@@ -15,7 +15,7 @@ async function main(): Promise<void> {
       parseSeedConfig()
     );
     console.log(
-      `Database seed complete: ${result.deviceCount} devices (${result.deviceIds.macos}, ${result.deviceIds.windows}) and ${result.deviceTokenCount} token HMACs upserted.`
+      `Database seed complete: ${result.deviceCount} devices (${result.deviceIds.macos}, ${result.deviceIds.windows}) and ${result.deviceTokenCount} new token HMACs inserted; existing credentials were preserved.`
     );
   } catch (error) {
     console.error(`Database seed failed (${safeDatabaseErrorCode(error)}).`);

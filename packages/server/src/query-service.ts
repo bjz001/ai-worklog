@@ -30,12 +30,13 @@ interface TimeZoneRow extends RowDataPacket {
 interface DeviceRow extends RowDataPacket {
   id: string;
   name: string;
-  canonical_key: string;
   platform: "MACOS" | "WINDOWS" | "LINUX";
   status: "ACTIVE" | "OFFLINE" | "REVOKED";
   last_seen_at: Date | null;
   last_synced_at: Date | null;
   prompt_count: number | string;
+  active_token_count: number | string;
+  active_token_last_used_at: Date | null;
 }
 
 interface ProjectRow extends RowDataPacket {
@@ -159,6 +160,8 @@ export async function accountTimeZone(
 function deviceStatus(row: DeviceRow, now = Date.now()): DeviceView["status"] {
   if (row.status === "REVOKED") return "OFFLINE";
   if (row.status === "OFFLINE") return "OFFLINE";
+  if (asNumber(row.active_token_count) === 0) return "NOT_CONFIGURED";
+  if (!row.active_token_last_used_at) return "WAITING";
   if (!row.last_synced_at) return "WAITING";
   if (now - row.last_synced_at.getTime() > 48 * 60 * 60 * 1000) {
     return "OFFLINE";
@@ -172,12 +175,24 @@ export async function listDevices(
 ): Promise<DeviceView[]> {
   const [rows] = await pool.execute<DeviceRow[]>(
     `SELECT d.id, d.name, d.platform, d.status, d.last_seen_at, d.last_synced_at,
-            COUNT(pe.id) AS prompt_count
+            COUNT(pe.id) AS prompt_count,
+            COALESCE(credentials.active_token_count, 0) AS active_token_count,
+            credentials.active_token_last_used_at
        FROM devices d
        LEFT JOIN prompt_entries pe
          ON pe.device_id = d.id AND pe.account_id = d.account_id
+       LEFT JOIN (
+         SELECT account_id, device_id, COUNT(*) AS active_token_count,
+                MAX(last_used_at) AS active_token_last_used_at
+           FROM device_tokens
+          WHERE revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP(6))
+          GROUP BY account_id, device_id
+       ) credentials
+         ON credentials.device_id = d.id AND credentials.account_id = d.account_id
       WHERE d.account_id = ?
-      GROUP BY d.id, d.name, d.platform, d.status, d.last_seen_at, d.last_synced_at
+      GROUP BY d.id, d.name, d.platform, d.status, d.last_seen_at, d.last_synced_at,
+               credentials.active_token_count, credentials.active_token_last_used_at
       ORDER BY d.name ASC`,
     [accountId]
   );
@@ -499,7 +514,7 @@ export async function listSkills(
   });
 }
 
-async function latestSummary(options: {
+export async function getSummaryForDate(options: {
   pool: Pool;
   accountId: string;
   workDate: string;
@@ -515,6 +530,13 @@ async function latestSummary(options: {
   const row = rows[0];
   if (!row) return null;
   const content = recordValue(row.content);
+  const summarySections = {
+    highlights: statementList(content.highlights),
+    projectProgress: statementList(content.projectProgress),
+    decisions: statementList(content.decisions),
+    blockers: statementList(content.blockers),
+    nextActions: statementList(content.nextActions)
+  };
   const [evidenceRows] = await options.pool.execute<EvidenceRow[]>(
     `SELECT ce.id, se.excerpt, COALESCE(p.name, '未分类项目') AS project_name,
             ce.occurred_at
@@ -528,17 +550,57 @@ async function latestSummary(options: {
       ORDER BY ce.occurred_at ASC`,
     [options.accountId, row.id]
   );
+  const evidenceById = new Map(
+    evidenceRows.map((evidence) => [evidence.id, evidence])
+  );
+  const referencedEvidenceIds = [
+    ...new Set(
+      Object.values(summarySections)
+        .flatMap((statements) => statements)
+        .flatMap((statement) => statement.evidenceIds)
+        .filter((id) => id.length > 0 && id.length <= 64)
+    )
+  ].slice(0, 256);
+  const missingEvidenceIds = referencedEvidenceIds.filter(
+    (id) => !evidenceById.has(id)
+  );
+  if (missingEvidenceIds.length > 0) {
+    const placeholders = missingEvidenceIds.map(() => "?").join(", ");
+    const [fallbackRows] = await options.pool.execute<EvidenceRow[]>(
+      `SELECT ce.id,
+              LEFT(COALESCE(pe.sanitized_content, ev.sanitized_content,
+                            '已脱敏证据'), 240) AS excerpt,
+              COALESCE(p.name, '未分类项目') AS project_name,
+              ce.occurred_at
+         FROM collected_events ce
+         LEFT JOIN prompt_entries pe
+           ON pe.collected_event_id = ce.id AND pe.account_id = ce.account_id
+         LEFT JOIN event_versions ev
+           ON ev.collected_event_id = ce.id AND ev.account_id = ce.account_id
+          AND ev.version = ce.current_version
+         LEFT JOIN projects p
+           ON p.id = ce.project_id AND p.account_id = ce.account_id
+        WHERE ce.account_id = ? AND ce.id IN (${placeholders})
+        ORDER BY ce.occurred_at ASC`,
+      [options.accountId, ...missingEvidenceIds]
+    );
+    for (const evidence of fallbackRows) {
+      if (!evidenceById.has(evidence.id)) evidenceById.set(evidence.id, evidence);
+    }
+  }
+  const allEvidenceRows = [...evidenceById.values()].sort(
+    (left, right) => left.occurred_at.getTime() - right.occurred_at.getTime()
+  );
   return {
     id: row.id,
     workDate: mysqlWorkDate(row.work_date),
     status: row.status === "COMPLETE" ? "complete" : "partial",
-    highlights: statementList(content.highlights),
-    projectProgress: statementList(content.projectProgress),
+    ...summarySections,
     completenessNote:
       typeof content.completenessNote === "string"
         ? content.completenessNote
         : "总结完整性信息缺失。",
-    evidence: evidenceRows.map((evidence) => ({
+    evidence: allEvidenceRows.map((evidence) => ({
       id: evidence.id,
       excerpt: evidence.excerpt ?? "已脱敏证据",
       projectName: evidence.project_name ?? "未分类项目",
@@ -558,7 +620,7 @@ export async function getDashboard(options: {
   const [devices, projects, summary, skills] = await Promise.all([
     listDevices(options.pool, options.accountId),
     listProjects(options.pool, options.accountId),
-    latestSummary({ pool: options.pool, accountId: options.accountId, workDate }),
+    getSummaryForDate({ pool: options.pool, accountId: options.accountId, workDate }),
     listSkills(options.pool, options.accountId)
   ]);
   return {

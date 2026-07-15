@@ -711,6 +711,40 @@ button:disabled {
   margin-top: 8px;
 }
 
+.summary-detail-status {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.summary-detail-status h3,
+.summary-detail-status p {
+  margin: 0;
+}
+
+.summary-detail-status .button {
+  justify-self: start;
+}
+
+.summary-detail-section .muted {
+  margin: 0;
+}
+
+.evidence-list li {
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+}
+
+.evidence-list span {
+  overflow-wrap: anywhere;
+}
+
+.evidence-list small {
+  color: var(--color-text-secondary);
+}
+
 .evidence-link {
   font-size: 12px;
   margin-left: var(--space-2);
@@ -1423,5 +1457,153 @@ code {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+.device-row__actions {
+  align-items: flex-end;
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-3);
+}
+
+.device-configure-button {
+  min-height: 32px;
+  padding-inline: var(--space-2);
+}
+
+.device-enrollment-form,
+.device-setup-results {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.device-enrollment-target h3,
+.device-enrollment-target p,
+.device-setup-command h3,
+.device-setup-command p,
+.device-secret p,
+.device-token-prompt-note p {
+  margin: 0;
+}
+
+.device-rotation-warning {
+  background: var(--color-warning-bg);
+  border-radius: var(--radius-md);
+  color: #5f4200;
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.device-rotation-warning > div,
+.device-rotation-warning label {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.device-rotation-warning p,
+.device-rotation-warning p span {
+  display: grid;
+  margin: 0;
+}
+
+.device-rotation-warning label {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.device-rotation-warning input {
+  flex: 0 0 auto;
+  height: 18px;
+  margin: 2px 0 0;
+  width: 18px;
+}
+
+.device-secret {
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-primary-container);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.device-secret code {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+  padding: var(--space-3);
+  user-select: all;
+}
+
+.device-secret .button {
+  justify-self: start;
+}
+
+.device-token-prompt-note {
+  margin: 0;
+}
+
+.device-setup-command {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.device-setup-command header {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--space-3);
+  justify-content: space-between;
+}
+
+.device-setup-command header p {
+  color: var(--color-text-secondary);
+  margin-top: var(--space-1);
+}
+
+.device-setup-command pre {
+  background: #202124;
+  border-radius: var(--radius-md);
+  color: #f8fafd;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--space-4);
+  white-space: pre;
+}
+
+.device-setup-command pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.device-copy-button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding-inline: var(--space-3);
+}
+
+@media (max-width: 760px) {
+  .device-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .device-row__actions {
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .device-setup-command header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .device-copy-button {
+    align-self: flex-start;
   }
 }

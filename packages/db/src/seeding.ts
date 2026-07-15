@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { Database } from "./client";
 import {
   buildDemoSeedPlan,
@@ -19,6 +19,7 @@ export async function runDemoSeed(
   config: SeedConfig = parseSeedConfig()
 ): Promise<DemoSeedResult> {
   const plan = buildDemoSeedPlan(config);
+  let insertedDeviceTokenCount = 0;
 
   await database.transaction(async (transaction) => {
     await transaction
@@ -33,42 +34,22 @@ export async function runDemoSeed(
       });
 
     for (const device of plan.devices) {
-      await transaction
+      const [insert] = await transaction
         .insert(devices)
-        .values(device)
-        .onDuplicateKeyUpdate({
-          set: {
-            accountId: device.accountId,
-            deviceRegistrationId: device.deviceRegistrationId,
-            name: device.name,
-            platform: device.platform,
-            status: device.status,
-            updatedAt: sql`CURRENT_TIMESTAMP(6)`
-          }
-        });
-    }
+        .ignore()
+        .values(device);
+      if (insert.affectedRows !== 1) continue;
 
-    for (const deviceToken of plan.deviceTokens) {
-      const [existingToken] = await transaction
-        .select({ id: deviceTokens.id })
-        .from(deviceTokens)
-        .where(eq(deviceTokens.id, deviceToken.id))
-        .limit(1);
+      const deviceToken = plan.deviceTokens.find(
+        (candidate) => candidate.deviceId === device.id
+      );
+      if (!deviceToken) throw new Error("Missing bootstrap device token");
 
-      if (existingToken) {
-        await transaction
-          .update(deviceTokens)
-          .set({
-            accountId: deviceToken.accountId,
-            deviceId: deviceToken.deviceId,
-            tokenHmac: deviceToken.tokenHmac,
-            label: deviceToken.label,
-            revokedAt: null
-          })
-          .where(eq(deviceTokens.id, deviceToken.id));
-      } else {
-        await transaction.insert(deviceTokens).values(deviceToken);
-      }
+      // Only the transaction that inserted the device may issue its seed
+      // credential. INSERT IGNORE makes concurrent and repeated bootstrap
+      // attempts deterministic without mutating dashboard-owned device state.
+      await transaction.insert(deviceTokens).values(deviceToken);
+      insertedDeviceTokenCount += 1;
     }
   });
 
@@ -79,6 +60,6 @@ export async function runDemoSeed(
       windows: plan.devices[1]?.id ?? ""
     },
     deviceCount: plan.devices.length,
-    deviceTokenCount: plan.deviceTokens.length
+    deviceTokenCount: insertedDeviceTokenCount
   };
 }

@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import type { PoolConnection } from "mysql2/promise";
+import { describe, expect, it, vi } from "vitest";
 import {
+  expectedDeviceIdsForDate,
+  latestSummaryMatchesInput,
+  summaryEvidenceStatements,
   summaryEvidenceFingerprint,
   summaryFingerprint,
   summaryLockName
@@ -41,6 +45,24 @@ describe("summaryFingerprint", () => {
       summaryFingerprint({ ...base, generatorFingerprint: "deepseek:model-b" })
     );
   });
+
+  it("uses a one-time generator fingerprint for an explicit regeneration", () => {
+    const base = {
+      evidenceFingerprint: "a".repeat(64),
+      expectedDeviceIds: ["mac"],
+      arrivedDeviceIds: ["mac"]
+    };
+    const automatic = summaryFingerprint({
+      ...base,
+      generatorFingerprint: "deepseek:model-a"
+    });
+    const manual = summaryFingerprint({
+      ...base,
+      generatorFingerprint: "deepseek:model-a:manual:request-1"
+    });
+
+    expect(manual).not.toBe(automatic);
+  });
 });
 
 describe("summaryLockName", () => {
@@ -71,5 +93,109 @@ describe("summaryEvidenceFingerprint", () => {
     ).not.toBe(
       summaryEvidenceFingerprint([{ ...evidence, result: "final answer" }])
     );
+  });
+});
+
+describe("summaryEvidenceStatements", () => {
+  it("includes evidence-backed statements from all five summary sections", () => {
+    const statement = (text: string) => ({
+      text,
+      evidenceIds: [`event-${text}`]
+    });
+
+    expect(
+      summaryEvidenceStatements({
+        highlights: [statement("highlight")],
+        projectProgress: [statement("project")],
+        decisions: [statement("decision")],
+        blockers: [statement("blocker")],
+        nextActions: [statement("next")]
+      }).map(({ key, evidenceIds }) => ({ key, evidenceIds }))
+    ).toEqual([
+      { key: "highlight:0", evidenceIds: ["event-highlight"] },
+      { key: "project:0", evidenceIds: ["event-project"] },
+      { key: "decision:0", evidenceIds: ["event-decision"] },
+      { key: "blocker:0", evidenceIds: ["event-blocker"] },
+      { key: "next-action:0", evidenceIds: ["event-next"] }
+    ]);
+  });
+});
+
+describe("latestSummaryMatchesInput", () => {
+  const canonicalInputFingerprint = "c".repeat(64);
+  const manualInputFingerprint = "m".repeat(64);
+
+  it("recognizes a manual revision on the next canonical worker run", () => {
+    expect(
+      latestSummaryMatchesInput({
+        latestInputFingerprint: manualInputFingerprint,
+        latestContent: JSON.stringify({ canonicalInputFingerprint }),
+        requestedInputFingerprint: canonicalInputFingerprint,
+        canonicalInputFingerprint,
+        isManualRegeneration: false
+      })
+    ).toBe(true);
+  });
+
+  it("also accepts a driver-decoded summary content object", () => {
+    expect(
+      latestSummaryMatchesInput({
+        latestInputFingerprint: manualInputFingerprint,
+        latestContent: { canonicalInputFingerprint },
+        requestedInputFingerprint: canonicalInputFingerprint,
+        canonicalInputFingerprint,
+        isManualRegeneration: false
+      })
+    ).toBe(true);
+  });
+
+  it("does not suppress a new explicit manual regeneration", () => {
+    expect(
+      latestSummaryMatchesInput({
+        latestInputFingerprint: manualInputFingerprint,
+        latestContent: JSON.stringify({ canonicalInputFingerprint }),
+        requestedInputFingerprint: "n".repeat(64),
+        canonicalInputFingerprint,
+        isManualRegeneration: true
+      })
+    ).toBe(false);
+  });
+
+  it("remains compatible with automatic rows that predate canonical metadata", () => {
+    expect(
+      latestSummaryMatchesInput({
+        latestInputFingerprint: canonicalInputFingerprint,
+        latestContent: "{}",
+        requestedInputFingerprint: canonicalInputFingerprint,
+        canonicalInputFingerprint,
+        isManualRegeneration: false
+      })
+    ).toBe(true);
+  });
+});
+
+describe("expectedDeviceIdsForDate", () => {
+  it("excludes devices created after the account-local work date", async () => {
+    const execute = vi.fn(async (sql: string, values?: unknown[]) => {
+      void sql;
+      void values;
+      return [[{ id: "device-mac" }], []];
+    });
+
+    await expect(
+      expectedDeviceIdsForDate({
+        pool: { execute } as unknown as Pick<PoolConnection, "execute">,
+        accountId: "account-1",
+        workDate: "2026-07-15",
+        timeZone: "Asia/Shanghai"
+      })
+    ).resolves.toEqual(["device-mac"]);
+
+    const [sql, values] = execute.mock.calls[0] ?? [];
+    expect(sql).toContain("created_at < ?");
+    expect(values).toEqual([
+      "account-1",
+      new Date("2026-07-15T16:00:00.000Z")
+    ]);
   });
 });
