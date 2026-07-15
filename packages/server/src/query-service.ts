@@ -281,6 +281,11 @@ export async function listPrompts(options: {
     values.push(pattern, pattern);
   }
 
+  if (options.query.projectId) {
+    clauses.push("pe.project_id = ?");
+    values.push(options.query.projectId);
+  }
+
   if (options.query.date) {
     const range = utcRangeForWorkDate(options.query.date, timeZone);
     clauses.push("pe.occurred_at >= ? AND pe.occurred_at < ?");

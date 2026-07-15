@@ -10,7 +10,8 @@ describe("parsePromptQuery", () => {
           pageSize: "50",
           q: "  同步  ",
           date: "2026-07-14",
-          source: "CODEX"
+          source: "CODEX",
+          projectId: "project_ABC-123"
         })
       )
     ).toEqual({
@@ -18,7 +19,8 @@ describe("parsePromptQuery", () => {
       pageSize: 50,
       q: "同步",
       date: "2026-07-14",
-      source: "CODEX"
+      source: "CODEX",
+      projectId: "project_ABC-123"
     });
   });
 
@@ -29,6 +31,19 @@ describe("parsePromptQuery", () => {
     expect(() =>
       parsePromptQuery(new URLSearchParams({ source: "OTHER" }))
     ).toThrow("query");
+  });
+
+  it("rejects malformed project IDs instead of normalizing them", () => {
+    for (const projectId of [
+      " project-1 ",
+      "project/1",
+      "项目-1",
+      "x".repeat(65)
+    ]) {
+      expect(() =>
+        parsePromptQuery(new URLSearchParams({ projectId }))
+      ).toThrow("query");
+    }
   });
 });
 

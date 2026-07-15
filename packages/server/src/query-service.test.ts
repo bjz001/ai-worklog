@@ -40,7 +40,8 @@ describe("listPrompts", () => {
         pageSize: 25,
         q: "同步",
         date: "2026-07-15",
-        source: "CODEX"
+        source: "CODEX",
+        projectId: "project-1"
       }
     });
 
@@ -54,6 +55,8 @@ describe("listPrompts", () => {
     expect(calls).toHaveLength(3);
     expect(calls[1]?.sql).toContain("COUNT(*)");
     expect(calls[1]?.sql).toContain("pe.occurred_at >= ?");
+    expect(calls[1]?.sql).toContain("pe.project_id = ?");
+    expect(calls[1]?.values).toContain("project-1");
     expect(calls[1]?.values.slice(-2).map((value) =>
       value instanceof Date ? value.toISOString() : value
     )).toEqual([
