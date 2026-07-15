@@ -14,6 +14,10 @@ required_files=(
   "$SCHEDULE_ROOT/macos-worker/install.sh"
   "$SCHEDULE_ROOT/macos-worker/run.sh"
   "$SCHEDULE_ROOT/macos-worker/uninstall.sh"
+  "$SCHEDULE_ROOT/macos-web/com.ai-worklog.web.plist.template"
+  "$SCHEDULE_ROOT/macos-web/install.sh"
+  "$SCHEDULE_ROOT/macos-web/run.sh"
+  "$SCHEDULE_ROOT/macos-web/uninstall.sh"
   "$SCHEDULE_ROOT/windows/Install.ps1"
   "$SCHEDULE_ROOT/windows/Run.ps1"
   "$SCHEDULE_ROOT/windows/Uninstall.ps1"
@@ -30,6 +34,7 @@ done
 for script in \
   "$SCHEDULE_ROOT"/macos/*.sh \
   "$SCHEDULE_ROOT"/macos-worker/*.sh \
+  "$SCHEDULE_ROOT"/macos-web/*.sh \
   "$SCHEDULE_ROOT/tests/"*.sh; do
   bash -n "$script"
 done
@@ -68,12 +73,42 @@ if grep -ERq -- '--backfill|[0-9]{4}-[0-9]{2}-[0-9]{2}' \
   exit 1
 fi
 
+web_plist="$SCHEDULE_ROOT/macos-web/com.ai-worklog.web.plist.template"
+web_installer="$SCHEDULE_ROOT/macos-web/install.sh"
+grep -q '<string>com.ai-worklog.web</string>' "$web_plist"
+grep -q '<key>RunAtLoad</key>' "$web_plist"
+grep -q '<key>KeepAlive</key><true/>' "$web_plist"
+grep -q '<key>ThrottleInterval</key><integer>30</integer>' "$web_plist"
+grep -q '<key>WorkingDirectory</key>' "$web_plist"
+grep -q '<string>--project-root</string>' "$web_plist"
+grep -q '<string>--node</string>' "$web_plist"
+grep -q '<string>--host</string>' "$web_plist"
+grep -q '<string>--port</string>' "$web_plist"
+grep -q '<key>RunAtLoad</key>' "$web_installer"
+grep -q '<key>KeepAlive</key><true/>' "$web_installer"
+grep -q '<key>ThrottleInterval</key><integer>30</integer>' "$web_installer"
+grep -Fq -- "--noproxy '*'" "$web_installer"
+if grep -ERqi \
+  'MYSQL_(PASSWORD|URL)|DATABASE_URL|LLM_SETTINGS_ENCRYPTION_KEY|API_KEY|Authorization:|Bearer[[:space:]]|123456' \
+  "$SCHEDULE_ROOT/macos-web"; then
+  printf 'web launchd files must not contain credentials\n' >&2
+  exit 1
+fi
+if grep -Eq '(^|[[:space:]])source[[:space:]]|eval[[:space:]]' \
+  "$SCHEDULE_ROOT/macos-web/run.sh"; then
+  printf 'web runner must not execute environment files\n' >&2
+  exit 1
+fi
+
 windows_install="$SCHEDULE_ROOT/windows/Install.ps1"
 windows_runner="$SCHEDULE_ROOT/windows/Run.ps1"
 grep -q 'AddHours(23)' "$windows_install"
 grep -q 'AddMinutes(30)' "$windows_install"
 grep -Fq '"CLAUDE_CODE_SOURCE_INSTANCE_ID"' "$windows_runner"
 grep -Fq '"CLAUDE_CODE_SOURCE_PATH"' "$windows_runner"
+grep -Fq '"AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP"' "$windows_runner"
+grep -Fq '"NODE_EXTRA_CA_CERTS"' "$windows_runner"
+grep -Fq 'Test-PrivateIPv4' "$windows_runner"
 windows_phase_patterns=(
   '-LogPhase "prepare-codex" -SourceType "CODEX"'
   '-LogPhase "prepare-claude-code" -SourceType "CLAUDE_CODE"'
@@ -90,9 +125,15 @@ if grep -Eqi 'AI_WORKLOG_DEVICE_TOKEN|Authorization:|Bearer[[:space:]]|123456' "
   printf 'Task Scheduler installer must not contain credentials\n' >&2
   exit 1
 fi
+if grep -Eqi "NODE_TLS_REJECT_UNAUTHORIZED[^\r\n]*[=:][[:space:]]*0|rejectUnauthorized[[:space:]]*=[[:space:]]*false|curl([.]exe)?[[:space:]].*(-k|--insecure)" \
+  "$SCHEDULE_ROOT/windows/Run.ps1" "$PROJECT_ROOT/README_SCHEDULES.md"; then
+  printf 'Windows TLS validation must never be disabled\n' >&2
+  exit 1
+fi
 
 grep -Fq 'CLAUDE_CODE_SOURCE_INSTANCE_ID=' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'CLAUDE_CODE_SOURCE_PATH=' "$SCHEDULE_ROOT/collector.env.example"
+grep -Fq 'AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=false' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'CLAUDE_CODE prepare' "$PROJECT_ROOT/README_SCHEDULES.md"
 
 if grep -Eq '(^|[[:space:]])source[[:space:]]|eval[[:space:]]' "$SCHEDULE_ROOT/macos/run.sh"; then
@@ -115,6 +156,7 @@ fi
 if command -v plutil >/dev/null 2>&1; then
   plutil -lint "$plist" >/dev/null
   plutil -lint "$worker_plist" >/dev/null
+  plutil -lint "$web_plist" >/dev/null
 fi
 if command -v pwsh >/dev/null 2>&1; then
   for script in "$SCHEDULE_ROOT"/windows/*.ps1; do
@@ -293,6 +335,61 @@ fi
 if grep -q 'embedded-secret' "$temporary_directory/bad-endpoint.out"; then
   printf 'runner exposed credentials embedded in the sync URL\n' >&2
   exit 1
+fi
+
+private_http_config="$temporary_directory/private-http.env"
+sed 's#https://example.invalid#http://172.18.209.21:3000#' \
+  "$config" >"$private_http_config"
+chmod 600 "$private_http_config"
+if bash "$SCHEDULE_ROOT/macos/run.sh" --config "$private_http_config" --dry-run \
+  >"$temporary_directory/private-http-denied.out" 2>&1; then
+  printf 'runner accepted private HTTP without explicit opt-in\n' >&2
+  exit 1
+fi
+printf 'AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=true\n' >>"$private_http_config"
+private_http_output="$(
+  bash "$SCHEDULE_ROOT/macos/run.sh" --config "$private_http_config" --dry-run 2>&1
+)"
+[[ "$private_http_output" == *'"status":"dry-run"'* ]] || {
+  printf 'runner rejected explicitly enabled private HTTP\n' >&2
+  exit 1
+}
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  web_root="$temporary_directory/web root"
+  web_home="$temporary_directory/web-home"
+  web_fake_node="$temporary_directory/path with spaces/fake-web-node"
+  mkdir -p \
+    "$web_root/node_modules/next/dist/bin" \
+    "$web_root/apps/web/.next" \
+    "$web_home"
+  : >"$web_root/node_modules/next/dist/bin/next"
+  printf 'test-build\n' >"$web_root/apps/web/.next/BUILD_ID"
+  printf 'APP_BASE_URL=http://172.18.209.21:3000\nMYSQL_PASSWORD=WEB_SECRET_CANARY\n' \
+    >"$web_root/.env.local"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$web_fake_node"
+  chmod 600 "$web_root/.env.local"
+  chmod 700 "$web_fake_node"
+
+  web_dry_output="$(HOME="$web_home" bash "$SCHEDULE_ROOT/macos-web/run.sh" \
+    --project-root "$web_root" --node "$web_fake_node" --dry-run 2>&1)"
+  [[ "$web_dry_output" == *'"status":"dry-run"'* \
+    && "$web_dry_output" != *'WEB_SECRET_CANARY'* ]] || {
+    printf 'web runner dry-run failed or exposed an environment value\n' >&2
+    exit 1
+  }
+  web_install_output="$(HOME="$web_home" bash "$SCHEDULE_ROOT/macos-web/install.sh" \
+    --project-root "$web_root" --node "$web_fake_node" --dry-run 2>&1)"
+  [[ "$web_install_output" == *'"status":"dry-run"'* ]] || {
+    printf 'web installer dry-run failed\n' >&2
+    exit 1
+  }
+  web_uninstall_output="$(HOME="$web_home" \
+    bash "$SCHEDULE_ROOT/macos-web/uninstall.sh" --dry-run 2>&1)"
+  [[ "$web_uninstall_output" == *'"status":"dry-run"'* ]] || {
+    printf 'web uninstaller dry-run failed\n' >&2
+    exit 1
+  }
 fi
 
 worker_root="$temporary_directory/worker root"

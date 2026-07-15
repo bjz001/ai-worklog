@@ -21,11 +21,45 @@
 - `CLAUDE_CODE_SOURCE_PATH`：本机明确授权的 Claude Code `.jsonl` 文件或目录的绝对路径，不能与 Codex 路径相同。
 - `AI_WORKLOG_PATH_HMAC_KEY`：用于不可逆标识本地路径的随机值。
 - `COLLECTOR_DB_PATH`：本机 SQLite Outbox 绝对路径。
-- `AI_WORKLOG_SYNC_URL`：两台机器指向同一个 HTTPS 同步端点。
+- `AI_WORKLOG_SYNC_URL`：两台机器指向同一个同步端点。
+- `AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP`：仅当中心服务位于可信 RFC1918 私网且使用 HTTP 时设为 `true`；公网地址仍会被拒绝。
 - `AI_WORKLOG_DEVICE_TOKEN`：每台机器独立的令牌。
 - `NODE_BINARY`：Node.js 可执行文件的绝对路径，推荐填写。
 
 配置文件不支持 `export`、变量展开或多行值。如果值两端使用同类引号，解析器会去掉外层引号，但不会执行其中内容。
+
+## 中央 Mac Web（无 Nginx、无证书）
+
+可信局域网内自用时，中央 Mac 可以让 Next.js 直接监听固定地址 `http://172.18.209.21:3000`，不需要 Nginx、Docker、证书或本地 CA。该 IP 应由路由器做 DHCP 保留；服务只绑定这个 IP，不绑定 `0.0.0.0`，也不要把 3000 端口映射到公网。
+
+先安全更新 `.env.local` 的 `APP_BASE_URL`，再重建 Web 与 Mac 采集器配置：
+
+```bash
+npm run lan:http:configure -- --host 172.18.209.21 --port 3000
+npm run collector:configure:macos
+chmod 600 .env.local
+npm run build
+```
+
+验证并安装登录后常驻的 LaunchAgent：
+
+```bash
+bash scripts/schedules/macos-web/run.sh \
+  --node "$(command -v node)" --validate-only
+bash scripts/schedules/macos-web/install.sh \
+  --node "$(command -v node)" --dry-run
+bash scripts/schedules/macos-web/install.sh \
+  --node "$(command -v node)"
+```
+
+未带 Dashboard Basic Auth 访问 `http://172.18.209.21:3000/` 应返回 `401`。`com.ai-worklog.web` 在当前 macOS 用户登录后保持常驻；日志位于 `~/Library/Logs/AIWorklog/web-service.log` 和 `web-service-error.log`。卸载不会删除 `.env.local`、数据库或日志：
+
+```bash
+bash scripts/schedules/macos-web/uninstall.sh --dry-run
+bash scripts/schedules/macos-web/uninstall.sh
+```
+
+此模式是局域网明文传输，设备 Token 和同步内容不会被 TLS 加密。只应在你信任的家庭/办公内网使用；网络不可信或需要公网访问时应改回 HTTPS。
 
 ## macOS（launchd）
 
@@ -122,13 +156,25 @@ icacls $Config /grant:r "*$($CurrentSid):(R,W)" "*S-1-5-18:(R)" "*S-1-5-32-544:(
 # 然后编辑 $Config，替换所有占位值
 ```
 
+在现有 `collector.env` 中设置：
+
+```text
+AI_WORKLOG_SYNC_URL=http://172.18.209.21:3000/api/v1/sync/batches
+AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=true
+```
+
+该显式开关只允许 RFC1918 私网 IPv4；即使设为 `true`，公网 HTTP 仍会被拒绝。
+
 配置文件的所有者必须是当前用户，具有读权限的身份只能是当前用户、SYSTEM 和 Administrators。然后验证并安装每天 23:30 的任务：
 
 ```powershell
 & ".\scripts\schedules\windows\Run.ps1" -ConfigPath $Config -DryRun
+& ".\scripts\schedules\windows\Run.ps1" -ConfigPath $Config
 & ".\scripts\schedules\windows\Install.ps1" -ConfigPath $Config -DryRun
 & ".\scripts\schedules\windows\Install.ps1" -ConfigPath $Config
 ```
+
+先完成一次真实同步，确认已有 Outbox 批次上传成功，再安装计划任务。Windows 不需要 MySQL、Nginx、证书或 Docker；它只向 Mac 的 HTTP API 上传脱敏后的批次。
 
 该任务以当前用户的有限权限运行，不会请求管理员权限。当 23:30 时用户未登录，任务会在下次可用时尝试执行。安全日志在 `%LOCALAPPDATA%\AIWorklog\logs\schedule.log`。卸载：
 
@@ -148,6 +194,7 @@ icacls $Config /grant:r "*$($CurrentSid):(R,W)" "*S-1-5-18:(R)" "*S-1-5-32-544:(
 - 卸载仅删除调度任务，不删除配置、Outbox 和日志。
 - 中央 Mac Worker 使用独立互斥锁；重叠调度会安全跳过，崩溃遗留的无效 PID 锁会在下次运行时恢复。
 - 中央 Mac Worker 永远走默认有界模式；历史回补必须由操作者在项目根目录手动显式执行。
+- Mac 睡眠、退出登录、IP 改变或不在线时，Windows 同步会失败但 Outbox 会保留，下次继续幂等重试。
 
 静态校验（不连接远程、不启动 Docker）：
 
