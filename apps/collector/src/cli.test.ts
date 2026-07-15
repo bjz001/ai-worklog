@@ -65,6 +65,32 @@ describe("collector CLI", () => {
     ]);
   });
 
+  it("passes the explicit private-LAN HTTP opt-in to sync", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
+    const databasePath = join(directory, "collector.sqlite");
+    const output: string[] = [];
+
+    await runCli(["sync"], {
+      env: {
+        COLLECTOR_DB_PATH: databasePath,
+        AI_WORKLOG_SYNC_URL: "http://172.18.209.21:3000/api/v1/sync/batches",
+        AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP: "true",
+        AI_WORKLOG_DEVICE_TOKEN: "fixture-device-token"
+      },
+      write: (line) => output.push(line)
+    });
+
+    expect(output).toEqual([
+      JSON.stringify({
+        command: "sync",
+        attempted: 0,
+        acked: 0,
+        failed: 0,
+        remainingPending: 0
+      })
+    ]);
+  });
+
   it("selects the Claude Code connector for prepare through AI_WORKLOG_SOURCE_TYPE", async () => {
     const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
     const databasePath = join(directory, "collector.sqlite");

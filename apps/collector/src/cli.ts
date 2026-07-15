@@ -29,6 +29,13 @@ function databasePath(env: Record<string, string | undefined>): string {
     || join(homedir(), ".ai-worklog", "collector.sqlite");
 }
 
+function allowInsecureLanHttp(env: Record<string, string | undefined>): boolean {
+  const value = env.AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP?.trim().toLowerCase() ?? "";
+  if (value === "" || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error("AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP must be true or false");
+}
+
 function configuredSourceType(env: Record<string, string | undefined>): PromptSourceType {
   const value = env.AI_WORKLOG_SOURCE_TYPE?.trim().toUpperCase() || "CODEX";
   if (value === "CODEX" || value === "CLAUDE_CODE") return value;
@@ -131,6 +138,7 @@ async function runSync(
         outbox,
         endpoint,
         token,
+        allowInsecureLanHttp: allowInsecureLanHttp(env),
         limit: 100
       });
       result.attempted += pageResult.attempted;

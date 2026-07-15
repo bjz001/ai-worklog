@@ -18,6 +18,46 @@ afterEach(() => {
 });
 
 describe("syncPending", () => {
+  it("requires an explicit opt-in for HTTP to an RFC1918 address", async () => {
+    const outbox = new Outbox(
+      join(mkdtempSync(join(tmpdir(), "collector-sync-")), "collector.sqlite")
+    );
+    openOutboxes.push(outbox);
+
+    await expect(
+      syncPending({
+        outbox,
+        endpoint: "http://172.18.209.21:3000/api/v1/sync/batches",
+        token: "fixture-device-token"
+      })
+    ).rejects.toThrow("HTTPS");
+
+    await expect(
+      syncPending({
+        outbox,
+        endpoint: "http://172.18.209.21:3000/api/v1/sync/batches",
+        token: "fixture-device-token",
+        allowInsecureLanHttp: true
+      })
+    ).resolves.toEqual({ attempted: 0, acked: 0, failed: 0 });
+  });
+
+  it("rejects public HTTP even when private-LAN HTTP is enabled", async () => {
+    const outbox = new Outbox(
+      join(mkdtempSync(join(tmpdir(), "collector-sync-")), "collector.sqlite")
+    );
+    openOutboxes.push(outbox);
+
+    await expect(
+      syncPending({
+        outbox,
+        endpoint: "http://8.8.8.8:3000/api/v1/sync/batches",
+        token: "fixture-device-token",
+        allowInsecureLanHttp: true
+      })
+    ).rejects.toThrow("HTTPS");
+  });
+
   it("uploads the payload with authentication, idempotency, and digest headers before ACKing", async () => {
     const outbox = new Outbox(join(mkdtempSync(join(tmpdir(), "collector-sync-")), "collector.sqlite"));
     openOutboxes.push(outbox);

@@ -49,6 +49,7 @@ const lines = [
   `AI_WORKLOG_PATH_HMAC_KEY=${pathHmacKey}`,
   `COLLECTOR_DB_PATH=${join(dataDirectory, "collector.sqlite")}`,
   `AI_WORKLOG_SYNC_URL=${appBaseUrl}/api/v1/sync/batches`,
+  `AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=${appBaseUrl.startsWith("http://") ? "true" : "false"}`,
   `AI_WORKLOG_DEVICE_TOKEN=${required(projectEnvironment, "MACOS_DEVICE_TOKEN")}`,
   `NODE_BINARY=${process.execPath}`
 ];

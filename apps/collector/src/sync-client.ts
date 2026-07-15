@@ -3,6 +3,7 @@ import {
   SyncBatchResultSchema
 } from "@ai-worklog/contracts";
 import { sha256Hex } from "@ai-worklog/core";
+import { isIP } from "node:net";
 import type { Outbox, PendingBatch } from "./outbox.js";
 
 export interface SyncResult {
@@ -31,12 +32,23 @@ function retryAfterMilliseconds(response: Response): number {
   return 60_000;
 }
 
-function validatedEndpoint(endpoint: string): URL {
+function isPrivateIpv4(hostname: string): boolean {
+  if (isIP(hostname) !== 4) return false;
+  const [first, second] = hostname.split(".").map(Number);
+  return first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168);
+}
+
+function validatedEndpoint(endpoint: string, allowInsecureLanHttp: boolean): URL {
   const url = new URL(endpoint);
   const isLocalHttp = url.protocol === "http:"
     && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1");
-  if (url.protocol !== "https:" && !isLocalHttp) {
-    throw new Error("Sync endpoint must use HTTPS (HTTP is allowed only for localhost)");
+  const isAllowedPrivateHttp = url.protocol === "http:"
+    && allowInsecureLanHttp
+    && isPrivateIpv4(url.hostname);
+  if (url.protocol !== "https:" && !isLocalHttp && !isAllowedPrivateHttp) {
+    throw new Error("Sync endpoint must use HTTPS unless private-LAN HTTP is explicitly enabled");
   }
   if (url.username || url.password) throw new Error("Sync endpoint must not contain credentials");
   return url;
@@ -141,10 +153,14 @@ export async function syncPending(options: {
   limit?: number;
   timeoutMs?: number;
   maxRateLimitRetries?: number;
+  allowInsecureLanHttp?: boolean;
   sleep?: (milliseconds: number) => Promise<void>;
 }): Promise<SyncResult> {
   if (!options.token) throw new Error("Device token is required");
-  const endpoint = validatedEndpoint(options.endpoint);
+  const endpoint = validatedEndpoint(
+    options.endpoint,
+    options.allowInsecureLanHttp === true
+  );
   const batches = options.outbox.listPending(options.limit ?? 20);
   const result: SyncResult = { attempted: 0, acked: 0, failed: 0 };
   const sleep = options.sleep ?? ((milliseconds: number) =>

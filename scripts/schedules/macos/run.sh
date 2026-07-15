@@ -53,11 +53,12 @@ CONFIG_KEYS=(
   AI_WORKLOG_PATH_HMAC_KEY
   COLLECTOR_DB_PATH
   AI_WORKLOG_SYNC_URL
+  AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP
   AI_WORKLOG_DEVICE_TOKEN
   NODE_BINARY
 )
 unset "${CONFIG_KEYS[@]}"
-unset AI_WORKLOG_SOURCE_TYPE
+unset AI_WORKLOG_SOURCE_TYPE NODE_EXTRA_CA_CERTS NODE_TLS_REJECT_UNAUTHORIZED NODE_OPTIONS NODE_PATH
 
 config_mode() {
   /usr/bin/stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
@@ -89,7 +90,7 @@ load_config() {
     value="${BASH_REMATCH[2]}"
     ((${#value} <= 8192)) || return 1
     case "$key" in
-      AI_WORKLOG_ACCOUNT_ID|AI_WORKLOG_DEVICE_ID|CODEX_SOURCE_INSTANCE_ID|CODEX_SOURCE_PATH|CLAUDE_CODE_SOURCE_INSTANCE_ID|CLAUDE_CODE_SOURCE_PATH|AI_WORKLOG_PATH_HMAC_KEY|COLLECTOR_DB_PATH|AI_WORKLOG_SYNC_URL|AI_WORKLOG_DEVICE_TOKEN|NODE_BINARY) ;;
+      AI_WORKLOG_ACCOUNT_ID|AI_WORKLOG_DEVICE_ID|CODEX_SOURCE_INSTANCE_ID|CODEX_SOURCE_PATH|CLAUDE_CODE_SOURCE_INSTANCE_ID|CLAUDE_CODE_SOURCE_PATH|AI_WORKLOG_PATH_HMAC_KEY|COLLECTOR_DB_PATH|AI_WORKLOG_SYNC_URL|AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP|AI_WORKLOG_DEVICE_TOKEN|NODE_BINARY) ;;
       *) return 1 ;;
     esac
     case "$seen_keys" in
@@ -135,9 +136,37 @@ fi
 sync_authority="${AI_WORKLOG_SYNC_URL#*://}"
 sync_authority="${sync_authority%%/*}"
 [[ -n "$sync_authority" && "$sync_authority" != *"@"* ]] || fail_config
+
+is_private_ipv4() {
+  local address="$1"
+  local first second third fourth octet
+  [[ "$address" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  first="${BASH_REMATCH[1]}"
+  second="${BASH_REMATCH[2]}"
+  third="${BASH_REMATCH[3]}"
+  fourth="${BASH_REMATCH[4]}"
+  for octet in "$first" "$second" "$third" "$fourth"; do
+    [[ "$octet" == "0" || "$octet" != 0* ]] || return 1
+    ((10#$octet <= 255)) || return 1
+  done
+  ((
+    first == 10 ||
+    (first == 172 && second >= 16 && second <= 31) ||
+    (first == 192 && second == 168)
+  ))
+}
+
+insecure_lan_http="${AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP:-false}"
+[[ "$insecure_lan_http" == "true" || "$insecure_lan_http" == "false" ]] || fail_config
 case "$AI_WORKLOG_SYNC_URL" in
   https://*) ;;
   http://localhost|http://localhost/*|http://localhost:*|http://127.0.0.1|http://127.0.0.1/*|http://127.0.0.1:*|http://\[::1\]|http://\[::1\]/*|http://\[::1\]:*) ;;
+  http://*)
+    [[ "$insecure_lan_http" == "true" ]] || fail_config
+    sync_host="${sync_authority%%:*}"
+    [[ "$sync_authority" == "$sync_host" || "$sync_authority" == "$sync_host:"* ]] || fail_config
+    is_private_ipv4 "$sync_host" || fail_config
+    ;;
   *) fail_config ;;
 esac
 

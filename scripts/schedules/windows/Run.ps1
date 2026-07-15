@@ -18,6 +18,7 @@ $ConfigKeys = @(
     "AI_WORKLOG_PATH_HMAC_KEY",
     "COLLECTOR_DB_PATH",
     "AI_WORKLOG_SYNC_URL",
+    "AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP",
     "AI_WORKLOG_DEVICE_TOKEN",
     "NODE_BINARY"
 )
@@ -125,6 +126,10 @@ function Import-CollectorConfig {
         [Environment]::SetEnvironmentVariable($key, $null, "Process")
     }
     [Environment]::SetEnvironmentVariable("AI_WORKLOG_SOURCE_TYPE", $null, "Process")
+    [Environment]::SetEnvironmentVariable("NODE_EXTRA_CA_CERTS", $null, "Process")
+    [Environment]::SetEnvironmentVariable("NODE_TLS_REJECT_UNAUTHORIZED", $null, "Process")
+    [Environment]::SetEnvironmentVariable("NODE_OPTIONS", $null, "Process")
+    [Environment]::SetEnvironmentVariable("NODE_PATH", $null, "Process")
 
     $seenKeys = @{}
     foreach ($rawLine in [IO.File]::ReadAllLines($Path)) {
@@ -153,6 +158,20 @@ function Import-CollectorConfig {
         }
         [Environment]::SetEnvironmentVariable($key, $value, "Process")
     }
+}
+
+function Test-PrivateIPv4 {
+    param([Parameter(Mandatory = $true)][string]$HostName)
+
+    $address = $null
+    if (-not [Net.IPAddress]::TryParse($HostName, [ref]$address) -or
+        $address.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+        return $false
+    }
+    $octets = $address.GetAddressBytes()
+    return $octets[0] -eq 10 -or
+        ($octets[0] -eq 172 -and $octets[1] -ge 16 -and $octets[1] -le 31) -or
+        ($octets[0] -eq 192 -and $octets[1] -eq 168)
 }
 
 function Assert-RequiredConfig {
@@ -195,11 +214,19 @@ function Assert-RequiredConfig {
         throw "Source identities and paths must be distinct"
     }
     $syncUri = [Uri]::new($env:AI_WORKLOG_SYNC_URL, [UriKind]::Absolute)
-    $localHttp = $syncUri.Scheme -eq "http"
-    if ($localHttp) {
-        $localHttp = @("localhost", "127.0.0.1", "::1") -contains $syncUri.Host
+    $insecureLanSetting = $env:AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP
+    if ([string]::IsNullOrWhiteSpace($insecureLanSetting)) {
+        $insecureLanSetting = "false"
     }
-    $secureEndpoint = $syncUri.Scheme -eq "https" -or $localHttp
+    if (@("true", "false") -notcontains $insecureLanSetting.ToLowerInvariant()) {
+        throw "Invalid private-LAN HTTP setting"
+    }
+    $localHttp = $syncUri.Scheme -eq "http" -and
+        (@("localhost", "127.0.0.1", "::1") -contains $syncUri.Host)
+    $privateLanHttp = $syncUri.Scheme -eq "http" -and
+        $insecureLanSetting.ToLowerInvariant() -eq "true" -and
+        (Test-PrivateIPv4 $syncUri.Host)
+    $secureEndpoint = $syncUri.Scheme -eq "https" -or $localHttp -or $privateLanHttp
     $hasEmbeddedCredentials = -not [string]::IsNullOrEmpty($syncUri.UserInfo)
     if (-not $secureEndpoint -or $hasEmbeddedCredentials) {
         throw "Invalid sync endpoint"
