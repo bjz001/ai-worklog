@@ -76,7 +76,7 @@ node scripts/create-mysql-app-user.mjs
 
 - 相同的 `AI_WORKLOG_ACCOUNT_ID`；
 - 各自不同的 `AI_WORKLOG_DEVICE_ID` 和 `AI_WORKLOG_DEVICE_TOKEN`；
-- 相同的 HTTPS `AI_WORKLOG_SYNC_URL`；
+- 相同的 `AI_WORKLOG_SYNC_URL`；默认使用 HTTPS，可信私网 HTTP 需按调度文档显式确认；
 - 每个工具/安装独立且稳定的 `SOURCE_INSTANCE_ID`。
 
 `AI_WORKLOG_DEVICE_ID` 必须与该 Token 在中心端绑定的设备 ID 完全一致。`db:seed` 使用 `.env.local` 中的 `MACOS_DEVICE_ID` / `WINDOWS_DEVICE_ID` 建立绑定；默认分别是 `device_macos_demo` / `device_windows_demo`。Mac 使用 `MACOS_DEVICE_TOKEN`，Windows 使用 `WINDOWS_DEVICE_TOKEN`。
@@ -93,6 +93,7 @@ AI_WORKLOG_ACCOUNT_ID=account_demo
 AI_WORKLOG_DEVICE_ID=device_macos_demo
 AI_WORKLOG_DEVICE_TOKEN=<this-device-token>
 AI_WORKLOG_SYNC_URL=https://worklog.example.com/api/v1/sync/batches
+AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=false
 AI_WORKLOG_PATH_HMAC_KEY=<random-per-device-key>
 COLLECTOR_DB_PATH=/Users/me/.ai-worklog/collector.sqlite
 
@@ -103,6 +104,7 @@ CLAUDE_CODE_SOURCE_PATH=/Users/me/.claude/projects
 ```
 
 Windows 将路径改为 `%USERPROFILE%\\.codex\\sessions`、`%USERPROFILE%\\.claude\\projects` 和 `%USERPROFILE%\\.ai-worklog\\collector.sqlite`。
+本次 Mac 内网直连方案的 Windows 值为 `AI_WORKLOG_SYNC_URL=http://172.18.209.21:3000/api/v1/sync/batches` 和 `AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=true`；完整操作以 [README_SCHEDULES.md](./README_SCHEDULES.md) 为准。
 
 当前 Mac 可从已有 `.env.local` 安全生成仓库外的受限配置，再验证：
 
@@ -170,7 +172,7 @@ npm run llm:key:init
 - `PUT /api/v1/llm-settings`
 - `POST /api/v1/llm-settings/test`
 
-生产环境中，页面和读 API 使用 `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` 的 Basic Auth，并必须置于 HTTPS 之后。同步接口不使用工作台密码，而使用每台设备的独立 Token。
+页面和读 API 使用 `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` 的 Basic Auth；公网或不可信网络部署必须置于 HTTPS 之后。仅在可信局域网自用时，可以按 [README_SCHEDULES.md](./README_SCHEDULES.md) 显式启用受限的私网 HTTP。同步接口不使用工作台密码，而使用每台设备的独立 Token。
 
 ## 安全边界
 
