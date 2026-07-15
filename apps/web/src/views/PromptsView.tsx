@@ -1,9 +1,11 @@
 "use client";
 
 import type { PromptView, PromptsResponse } from "@ai-worklog/contracts";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 
+import { PromptDetailContent } from "@/components/prompts/PromptDetailContent";
 import { useDetailDrawer } from "@/components/shell/DrawerContext";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -16,6 +18,7 @@ import {
 import { StatusChip } from "@/components/ui/StatusChip";
 import { useApiResource } from "@/hooks/use-api-resource";
 import { collectionState } from "@/lib/api-client";
+import { groupPromptsByProject } from "@/lib/prompt-groups";
 import {
   formatDateTime,
   formatNumber,
@@ -27,6 +30,7 @@ export function PromptsView() {
   const searchParams = useSearchParams();
   const initialQuery = searchParams.get("q") ?? "";
   const initialDate = searchParams.get("date") ?? "";
+  const projectId = searchParams.get("projectId") ?? "";
   const [queryDraft, setQueryDraft] = useState(initialQuery);
   const [query, setQuery] = useState(initialQuery);
   const [date, setDate] = useState(initialDate);
@@ -37,12 +41,21 @@ export function PromptsView() {
     if (query) params.set("q", query);
     if (date) params.set("date", date);
     if (source) params.set("source", source);
+    if (projectId) params.set("projectId", projectId);
     return `/api/v1/prompts?${params.toString()}`;
-  }, [date, page, query, source]);
+  }, [date, page, projectId, query, source]);
   const { data, error, loading, reload } = useApiResource<PromptsResponse>(path);
   const { openDrawer } = useDetailDrawer();
   const prompts = data?.data ?? [];
+  const groups = useMemo(() => groupPromptsByProject(prompts), [prompts]);
+  const groupSignature = groups.map((group) => group.key).join("|");
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const state = collectionState({ loading, error, count: prompts.length });
+
+  useEffect(() => {
+    const first = groups[0]?.key;
+    setExpandedGroups(first ? new Set([first]) : new Set());
+  }, [groupSignature]);
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -54,34 +67,16 @@ export function PromptsView() {
     openDrawer({
       title: prompt.projectName,
       subtitle: `${formatSource(prompt.sourceType)} · ${formatDateTime(prompt.occurredAt)}`,
-      content: (
-        <div className="stack">
-          <section className="drawer-section">
-            <h3>用户 Prompt</h3>
-            <p className="prompt-content">{prompt.content}</p>
-          </section>
-          <section className="drawer-section">
-            <h3>可见结果</h3>
-            <p>{prompt.resultExcerpt ?? "这条 Prompt 没有关联的可见结果摘要。"}</p>
-          </section>
-          <section className="drawer-section">
-            <h3>来源信息</h3>
-            <dl className="definition-list">
-              <dt>来源</dt><dd>{formatSource(prompt.sourceType)}</dd>
-              <dt>设备</dt><dd>{prompt.deviceName}</dd>
-              <dt>工作日期</dt><dd>{prompt.workDate}</dd>
-              <dt>记录时间</dt><dd>{formatDateTime(prompt.occurredAt)}</dd>
-              <dt>Prompt ID</dt><dd>{prompt.id}</dd>
-            </dl>
-          </section>
-          {prompt.tags.length > 0 ? (
-            <section className="drawer-section">
-              <h3>标签</h3>
-              <div className="tag-list">{prompt.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>
-            </section>
-          ) : null}
-        </div>
-      )
+      content: <PromptDetailContent prompt={prompt} />
+    });
+  };
+
+  const toggleGroup = (key: string) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
     });
   };
 
@@ -104,6 +99,13 @@ export function PromptsView() {
         <button className="button button--primary" type="submit">搜索</button>
       </form>
 
+      {projectId ? (
+        <div className="active-filter" role="status">
+          <span><Icon name="folder" size={16} />正在查看指定项目的 Prompt</span>
+          <Link className="button button--text" href="/prompts">清除项目筛选</Link>
+        </div>
+      ) : null}
+
       {state === "loading" ? <LoadingState rows={7} /> : null}
       {state === "error" && error ? <ErrorState error={error} onRetry={reload} /> : null}
       {state === "empty" ? (
@@ -115,27 +117,54 @@ export function PromptsView() {
       ) : null}
       {state === "ready" && data ? (
         <Surface title="Prompt 记录" description={`共 ${formatNumber(data.pagination.totalItems)} 条，第 ${data.pagination.page} / ${Math.max(1, data.pagination.totalPages)} 页`}>
-          <div className="inbox-list prompt-list">
-            {prompts.map((prompt) => (
-              <button className="inbox-row" key={prompt.id} onClick={() => showPrompt(prompt)} type="button">
-                <div className="inbox-row__primary">
-                  <strong>{prompt.projectName}</strong>
-                  <span>{formatSource(prompt.sourceType)} · {prompt.deviceName}</span>
-                </div>
-                <div className="inbox-row__summary">
-                  <strong>{summarizeText(prompt.content, 112)}</strong>
-                  <span>{prompt.resultExcerpt ? summarizeText(prompt.resultExcerpt, 100) : "无可见结果摘要"}</span>
-                </div>
-                <div className="inbox-row__meta">
-                  <span className="inline-actions">
-                    {prompt.isFavorite ? <Icon name="favorite" size={16} /> : null}
-                    {prompt.tags.slice(0, 1).map((tag) => <StatusChip key={tag}>{tag}</StatusChip>)}
-                  </span>
-                  <span>{formatDateTime(prompt.occurredAt)}</span>
-                </div>
-                <Icon name="chevron-right" />
-              </button>
-            ))}
+          <div className="prompt-groups">
+            {groups.map((group) => {
+              const expanded = expandedGroups.has(group.key);
+              const panelId = `prompt-group-${group.key.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+              const headingId = `${panelId}-heading`;
+              return (
+                <section className="prompt-group" key={group.key}>
+                  <button
+                    aria-controls={panelId}
+                    aria-expanded={expanded}
+                    className="group-disclosure"
+                    id={headingId}
+                    onClick={() => toggleGroup(group.key)}
+                    type="button"
+                  >
+                    <span>
+                      <strong>{group.projectName}</strong>
+                      <small>本页 {formatNumber(group.prompts.length)} 条</small>
+                    </span>
+                    <Icon className={expanded ? "disclosure-icon disclosure-icon--open" : "disclosure-icon"} name="chevron-right" />
+                  </button>
+                  <div aria-labelledby={headingId} hidden={!expanded} id={panelId} role="region">
+                    <div className="inbox-list prompt-list">
+                      {group.prompts.map((prompt) => (
+                        <button className="inbox-row" key={prompt.id} onClick={() => showPrompt(prompt)} type="button">
+                          <div className="inbox-row__primary">
+                            <strong>{formatSource(prompt.sourceType)}</strong>
+                            <span>{prompt.deviceName}</span>
+                          </div>
+                          <div className="inbox-row__summary">
+                            <strong>{summarizeText(prompt.content, 112)}</strong>
+                            <span>{prompt.resultExcerpt ? summarizeText(prompt.resultExcerpt, 100) : "无可见结果摘要"}</span>
+                          </div>
+                          <div className="inbox-row__meta">
+                            <span className="inline-actions">
+                              {prompt.isFavorite ? <Icon name="favorite" size={16} /> : null}
+                              {prompt.tags.slice(0, 1).map((tag) => <StatusChip key={tag}>{tag}</StatusChip>)}
+                            </span>
+                            <span>{formatDateTime(prompt.occurredAt)}</span>
+                          </div>
+                          <Icon name="chevron-right" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              );
+            })}
           </div>
           <nav aria-label="Prompt 分页" className="pagination-bar">
             <button className="button button--secondary" disabled={data.pagination.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))} type="button">
