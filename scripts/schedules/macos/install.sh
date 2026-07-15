@@ -83,8 +83,8 @@ cat >"$temporary_plist" <<PLIST
   </array>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Hour</key><integer>23</integer>
-    <key>Minute</key><integer>30</integer>
+    <key>Hour</key><integer>18</integer>
+    <key>Minute</key><integer>0</integer>
   </dict>
   <key>ProcessType</key><string>Background</string>
   <key>LowPriorityIO</key><true/>

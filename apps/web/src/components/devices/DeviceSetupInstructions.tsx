@@ -105,7 +105,9 @@ export function DeviceSetupInstructions({
         text={setup.validateCommand}
       />
       <CommandBlock
-        description="通过后安装每天 23:30 自动同步。"
+        description={platform === "MACOS"
+          ? "通过后安装每天 18:00 自动同步。"
+          : "通过后安装每天 23:30 自动同步。"}
         label="3. 安装定时任务"
         text={setup.installCommand}
       />

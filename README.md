@@ -128,9 +128,9 @@ npm run collector -- status
 
 采集器默认对非 localhost 地址强制 HTTPS；只有显式开启风险确认时才接受私网 IPv4 HTTP。请不要把设备 Token 放进命令行参数、任务调度器参数或 Git。
 
-## 每晚自动同步
+## 每日自动同步
 
-macOS launchd 与 Windows Task Scheduler 安装/卸载脚本见 [README_SCHEDULES.md](./README_SCHEDULES.md)。默认每晚 23:30 运行，密钥只从设备本地的受限配置文件读取。
+macOS launchd 与 Windows Task Scheduler 安装/卸载脚本见 [README_SCHEDULES.md](./README_SCHEDULES.md)。macOS 默认每天 18:00 运行，Windows 默认每天 23:30 运行；密钥只从设备本地的受限配置文件读取。
 中央服务所在的 Mac 可按同一文档另外安装 23:40 的有界总结 Worker LaunchAgent；它不会自动执行历史回补。
 
 同步 API 收到 ACK 前，Outbox 不会删除待传数据。断网、进程退出或“数据库已提交但 ACK 丢失”后，下次会安全重传。

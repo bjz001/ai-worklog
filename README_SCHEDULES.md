@@ -1,6 +1,6 @@
 # AI Worklog 每日采集与同步
 
-这套脚本在 macOS 和 Windows 的本地时区每天 23:30 按固定顺序执行三步：采集 Codex、采集 Claude Code，最后将本地 Outbox 中的待同步批次以有界批量发送到中央 API。两种本地数据源都使用同一个本机 `AI_WORKLOG_DEVICE_ID`，但使用不同的 source instance 和路径。采集器在写入 Outbox 前脱敏。
+这套脚本按设备本地时区运行：macOS 每天 18:00、Windows 每天 23:30。每次都按固定顺序执行三步：采集 Codex、采集 Claude Code，最后将本地 Outbox 中的待同步批次以有界批量发送到中央 API。两种本地数据源都使用同一个本机 `AI_WORKLOG_DEVICE_ID`，但使用不同的 source instance 和路径。采集器在写入 Outbox 前脱敏。
 
 中央服务所在的 Mac 可另外安装一个每天 23:40 的总结 Worker LaunchAgent。该任务永远调用无参数的有界默认模式，最多处理当天与有待处理任务的昨天；它不会自动传入历史回补参数。
 
@@ -90,7 +90,7 @@ install -m 600 scripts/schedules/collector.env.example \
 # 然后编辑 ~/.config/ai-worklog/collector.env，替换所有占位值
 ```
 
-先做无网络、无采集的验证，再安装 LaunchAgent：
+先做无网络、无采集的验证，再安装每天 18:00 运行的 LaunchAgent：
 
 ```bash
 RUNTIME="$HOME/Library/Application Support/AIWorklog/app"

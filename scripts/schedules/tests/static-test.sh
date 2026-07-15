@@ -42,8 +42,13 @@ for script in \
 done
 
 plist="$SCHEDULE_ROOT/macos/com.ai-worklog.collector.plist.template"
-grep -q '<integer>23</integer>' "$plist"
-grep -q '<integer>30</integer>' "$plist"
+collector_installer="$SCHEDULE_ROOT/macos/install.sh"
+collector_hour="$(awk '/<key>Hour<\/key>/ { getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit }' "$plist")"
+collector_minute="$(awk '/<key>Minute<\/key>/ { getline; gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit }' "$plist")"
+[[ "$collector_hour" == '<integer>18</integer>' ]]
+[[ "$collector_minute" == '<integer>0</integer>' ]]
+grep -q '<key>Hour</key><integer>18</integer>' "$collector_installer"
+grep -q '<key>Minute</key><integer>0</integer>' "$collector_installer"
 grep -q '<string>--config</string>' "$plist"
 if grep -Eqi 'AI_WORKLOG_DEVICE_TOKEN|Authorization:|Bearer[[:space:]]|123456' "$plist"; then
   printf 'launchd template must not contain credentials\n' >&2
