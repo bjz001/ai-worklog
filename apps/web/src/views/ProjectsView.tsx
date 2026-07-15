@@ -1,8 +1,14 @@
 "use client";
 
-import type { ProjectView, ProjectsResponse } from "@ai-worklog/contracts";
-import { useMemo, useState } from "react";
+import type { ProjectView, ProjectsResponse, PromptView, PromptsResponse } from "@ai-worklog/contracts";
+import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { PromptDetailContent } from "@/components/prompts/PromptDetailContent";
+import {
+  ProjectPromptAccordion,
+  type ProjectPromptLoad
+} from "@/components/projects/ProjectPromptAccordion";
 import { useDetailDrawer } from "@/components/shell/DrawerContext";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -13,16 +19,27 @@ import {
   PartialNotice,
   Surface
 } from "@/components/ui/PageElements";
-import { StatusChip } from "@/components/ui/StatusChip";
 import { useApiResource } from "@/hooks/use-api-resource";
-import { collectionState } from "@/lib/api-client";
-import { formatDateTime, formatNumber, summarizeText } from "@/lib/presenters";
+import { collectionState, fetchApi } from "@/lib/api-client";
+import {
+  formatDateTime,
+  formatNumber,
+  formatSource
+} from "@/lib/presenters";
 
 export function ProjectsView() {
+  const searchParams = useSearchParams();
+  const requestedProjectId = searchParams.get("project") ?? "";
   const { data, error, loading, reload } =
     useApiResource<ProjectsResponse>("/api/v1/projects");
   const { openDrawer } = useDetailDrawer();
   const [query, setQuery] = useState("");
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
+    () => new Set(requestedProjectId ? [requestedProjectId] : [])
+  );
+  const [projectPrompts, setProjectPrompts] = useState<
+    Record<string, ProjectPromptLoad>
+  >({});
   const projects = data?.data ?? [];
   const needsReview = projects.some((project) =>
     /待确认|低置信|unknown/i.test(project.assignmentReason)
@@ -43,6 +60,44 @@ export function ProjectsView() {
         .includes(term)
     );
   }, [projects, query]);
+
+  const loadProjectPrompts = useCallback(async (projectId: string) => {
+    const current = projectPrompts[projectId];
+    if (current?.loading || current?.data) return;
+    setProjectPrompts((states) => ({
+      ...states,
+      [projectId]: { loading: true }
+    }));
+    try {
+      const response = await fetchApi<PromptsResponse>(
+        `/api/v1/prompts?projectId=${encodeURIComponent(projectId)}&page=1&pageSize=10`
+      );
+      setProjectPrompts((states) => ({
+        ...states,
+        [projectId]: { loading: false, data: response }
+      }));
+    } catch (requestError) {
+      setProjectPrompts((states) => ({
+        ...states,
+        [projectId]: {
+          loading: false,
+          error: requestError instanceof Error
+            ? requestError
+            : new Error("项目 Prompt 加载失败")
+        }
+      }));
+    }
+  }, [projectPrompts]);
+
+  useEffect(() => {
+    if (!requestedProjectId) return;
+    if (!projects.some((project) => project.id === requestedProjectId)) return;
+    setExpandedProjects((current) => {
+      if (current.has(requestedProjectId)) return current;
+      return new Set([...current, requestedProjectId]);
+    });
+    void loadProjectPrompts(requestedProjectId);
+  }, [loadProjectPrompts, projects, requestedProjectId]);
 
   const showProject = (project: ProjectView) => {
     openDrawer({
@@ -73,6 +128,25 @@ export function ProjectsView() {
     });
   };
 
+  const showPrompt = (prompt: PromptView) => {
+    openDrawer({
+      title: prompt.projectName,
+      subtitle: `${formatSource(prompt.sourceType)} · ${formatDateTime(prompt.occurredAt)}`,
+      content: <PromptDetailContent prompt={prompt} />
+    });
+  };
+
+  const toggleProject = (projectId: string) => {
+    const willExpand = !expandedProjects.has(projectId);
+    setExpandedProjects((current) => {
+      const next = new Set(current);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+    if (willExpand) void loadProjectPrompts(projectId);
+  };
+
   if (state === "loading") return <><PageHeader title="项目" description="统一 Windows 与 macOS 上的项目归属" /><LoadingState rows={6} /></>;
   if (state === "error" && error) return <><PageHeader title="项目" description="统一 Windows 与 macOS 上的项目归属" /><ErrorState error={error} onRetry={reload} /></>;
   if (state === "empty") {
@@ -94,24 +168,30 @@ export function ProjectsView() {
         <EmptyState description="尝试缩短关键词或清空当前搜索。" icon="search" title="没有匹配的项目" />
       ) : (
         <Surface className="project-list-surface" title="全部项目" description="最近有活动的项目排在前面">
-          <div className="inbox-list">
-            {visibleProjects.map((project) => (
-              <button className="inbox-row" key={project.id} onClick={() => showProject(project)} type="button">
-                <div className="inbox-row__primary">
-                  <strong>{project.name}</strong>
-                  <span>{project.canonicalKey}</span>
-                </div>
-                <div className="inbox-row__summary">
-                  <strong>{project.recentPrompt ? summarizeText(project.recentPrompt, 90) : "等待首条工作记录"}</strong>
-                  <span>{project.assignmentReason}</span>
-                </div>
-                <div className="inbox-row__meta">
-                  <StatusChip tone="neutral">{project.promptCount} 条 · {project.deviceCount} 台</StatusChip>
-                  <span>{formatDateTime(project.lastActivityAt)}</span>
-                </div>
-                <Icon name="chevron-right" />
-              </button>
-            ))}
+          <div className="project-accordions">
+            {visibleProjects.map((project) => {
+              const expanded = expandedProjects.has(project.id);
+              const promptState = projectPrompts[project.id];
+              return (
+                <ProjectPromptAccordion
+                  expanded={expanded}
+                  key={project.id}
+                  onRetry={() => {
+                    setProjectPrompts((states) => {
+                      const next = { ...states };
+                      delete next[project.id];
+                      return next;
+                    });
+                    queueMicrotask(() => void loadProjectPrompts(project.id));
+                  }}
+                  onShowProject={() => showProject(project)}
+                  onShowPrompt={showPrompt}
+                  onToggle={() => toggleProject(project.id)}
+                  project={project}
+                  promptState={promptState}
+                />
+              );
+            })}
           </div>
         </Surface>
       )}
