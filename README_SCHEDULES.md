@@ -39,24 +39,30 @@ npm run lan:http:configure -- --host 172.18.209.21 --port 3000
 npm run collector:configure:macos
 chmod 600 .env.local
 npm run build
+bash scripts/schedules/macos-runtime/deploy.sh --dry-run
+bash scripts/schedules/macos-runtime/deploy.sh
 ```
 
-验证并安装登录后常驻的 LaunchAgent：
+macOS 不允许后台 LaunchAgent 直接读取 Desktop 等隐私目录，因此部署脚本会把只用于运行的副本同步到 `~/Library/Application Support/AIWorklog/app`。开发和 Git 仍在原仓库；每次拉取代码、改配置或重新构建后，再运行一次部署脚本。
+
+从运行副本验证并安装登录后常驻的 LaunchAgent：
 
 ```bash
-bash scripts/schedules/macos-web/run.sh \
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos-web/run.sh" \
   --node "$(command -v node)" --validate-only
-bash scripts/schedules/macos-web/install.sh \
+bash "$RUNTIME/scripts/schedules/macos-web/install.sh" \
   --node "$(command -v node)" --dry-run
-bash scripts/schedules/macos-web/install.sh \
+bash "$RUNTIME/scripts/schedules/macos-web/install.sh" \
   --node "$(command -v node)"
 ```
 
 未带 Dashboard Basic Auth 访问 `http://172.18.209.21:3000/` 应返回 `401`。`com.ai-worklog.web` 在当前 macOS 用户登录后保持常驻；日志位于 `~/Library/Logs/AIWorklog/web-service.log` 和 `web-service-error.log`。卸载不会删除 `.env.local`、数据库或日志：
 
 ```bash
-bash scripts/schedules/macos-web/uninstall.sh --dry-run
-bash scripts/schedules/macos-web/uninstall.sh
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos-web/uninstall.sh" --dry-run
+bash "$RUNTIME/scripts/schedules/macos-web/uninstall.sh"
 ```
 
 此模式是局域网明文传输，设备 Token 和同步内容不会被 TLS 加密。只应在你信任的家庭/办公内网使用；网络不可信或需要公网访问时应改回 HTTPS。
@@ -67,7 +73,8 @@ bash scripts/schedules/macos-web/uninstall.sh
 
 ```bash
 npm run collector:configure:macos
-bash scripts/schedules/macos/run.sh --validate-only
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos/run.sh" --validate-only
 ```
 
 否则按下面步骤手工创建。
@@ -84,26 +91,29 @@ install -m 600 scripts/schedules/collector.env.example \
 先做无网络、无采集的验证，再安装 LaunchAgent：
 
 ```bash
-bash scripts/schedules/macos/run.sh \
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos/run.sh" \
   --config "$HOME/.config/ai-worklog/collector.env" --dry-run
-bash scripts/schedules/macos/install.sh \
+bash "$RUNTIME/scripts/schedules/macos/install.sh" \
   --config "$HOME/.config/ai-worklog/collector.env" --dry-run
-bash scripts/schedules/macos/install.sh \
+bash "$RUNTIME/scripts/schedules/macos/install.sh" \
   --config "$HOME/.config/ai-worklog/collector.env"
 ```
 
 手动执行一次采集和同步：
 
 ```bash
-bash scripts/schedules/macos/run.sh \
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos/run.sh" \
   --config "$HOME/.config/ai-worklog/collector.env"
 ```
 
 安全日志在 `~/Library/Logs/AIWorklog/`，只记录阶段、状态和 UTC 时间，不记录令牌、提示词正文或响应正文。卸载：
 
 ```bash
-bash scripts/schedules/macos/uninstall.sh --dry-run
-bash scripts/schedules/macos/uninstall.sh
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos/uninstall.sh" --dry-run
+bash "$RUNTIME/scripts/schedules/macos/uninstall.sh"
 ```
 
 ## 中央 Mac 总结 Worker（launchd）
@@ -118,18 +128,20 @@ chmod 600 .env.local
 以下验证和 dry-run 只检查文件、权限、项目路径和 Node.js 绝对路径，不连接 MySQL、不调用 LLM，也不启动 Worker：
 
 ```bash
-bash scripts/schedules/macos-worker/run.sh \
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos-worker/run.sh" \
   --node "$(command -v node)" --validate-only
-bash scripts/schedules/macos-worker/run.sh \
+bash "$RUNTIME/scripts/schedules/macos-worker/run.sh" \
   --node "$(command -v node)" --dry-run
-bash scripts/schedules/macos-worker/install.sh \
+bash "$RUNTIME/scripts/schedules/macos-worker/install.sh" \
   --node "$(command -v node)" --dry-run
 ```
 
 确认输出为成功状态后再安装每天 23:40 的 LaunchAgent：
 
 ```bash
-bash scripts/schedules/macos-worker/install.sh \
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos-worker/install.sh" \
   --node "$(command -v node)"
 ```
 
@@ -138,8 +150,9 @@ bash scripts/schedules/macos-worker/install.sh \
 移动项目目录或更换 Node.js 后必须重新安装。卸载不会删除 `.env.local`、数据库或日志：
 
 ```bash
-bash scripts/schedules/macos-worker/uninstall.sh --dry-run
-bash scripts/schedules/macos-worker/uninstall.sh
+RUNTIME="$HOME/Library/Application Support/AIWorklog/app"
+bash "$RUNTIME/scripts/schedules/macos-worker/uninstall.sh" --dry-run
+bash "$RUNTIME/scripts/schedules/macos-worker/uninstall.sh"
 ```
 
 ## Windows（Task Scheduler）

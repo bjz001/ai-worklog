@@ -18,6 +18,7 @@ required_files=(
   "$SCHEDULE_ROOT/macos-web/install.sh"
   "$SCHEDULE_ROOT/macos-web/run.sh"
   "$SCHEDULE_ROOT/macos-web/uninstall.sh"
+  "$SCHEDULE_ROOT/macos-runtime/deploy.sh"
   "$SCHEDULE_ROOT/windows/Install.ps1"
   "$SCHEDULE_ROOT/windows/Run.ps1"
   "$SCHEDULE_ROOT/windows/Uninstall.ps1"
@@ -35,6 +36,7 @@ for script in \
   "$SCHEDULE_ROOT"/macos/*.sh \
   "$SCHEDULE_ROOT"/macos-worker/*.sh \
   "$SCHEDULE_ROOT"/macos-web/*.sh \
+  "$SCHEDULE_ROOT"/macos-runtime/*.sh \
   "$SCHEDULE_ROOT/tests/"*.sh; do
   bash -n "$script"
 done
