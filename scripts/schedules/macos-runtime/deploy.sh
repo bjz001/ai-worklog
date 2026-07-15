@@ -160,8 +160,8 @@ acquire_barrier_lock() {
     sleep 1
     IFS= read -r existing_pid 2>/dev/null <"$lock_directory/pid" || true
   fi
-  if [[ "$existing_pid" =~ ^[1-9][0-9]*$ && "$existing_pid" != "1" ]] && \
-    kill -0 "$existing_pid" >/dev/null 2>&1; then
+  [[ "$existing_pid" =~ ^[1-9][0-9]*$ && "$existing_pid" != "1" ]] || return 1
+  if kill -0 "$existing_pid" >/dev/null 2>&1; then
     return 1
   fi
 
@@ -360,8 +360,17 @@ done
 [[ "$PROJECT_ROOT" != *$'\n'* && "$PROJECT_ROOT" != *$'\r'* ]] || fail_deploy
 [[ -d "$PROJECT_ROOT" ]] || fail_deploy
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)" || fail_deploy
+CANONICAL_HOME="$(cd "$HOME" && pwd -P)" || fail_deploy
+CANONICAL_MANAGED_ROOT="$CANONICAL_HOME/Library/Application Support/AIWorklog"
+if [[ -d "$(dirname "$MANAGED_ROOT")" ]]; then
+  CANONICAL_MANAGED_ROOT="$(cd "$(dirname "$MANAGED_ROOT")" && pwd -P)/AIWorklog" || \
+    fail_deploy
+fi
 case "$PROJECT_ROOT/" in
-  "$MANAGED_ROOT/"*) fail_deploy ;;
+  "$CANONICAL_MANAGED_ROOT/"*) fail_deploy ;;
+esac
+case "$CANONICAL_MANAGED_ROOT/" in
+  "$PROJECT_ROOT/"*) fail_deploy ;;
 esac
 
 if [[ -z "$NODE_BINARY" ]]; then

@@ -218,8 +218,8 @@ acquire_lock() {
       IFS= read -r existing_pid 2>/dev/null <"$LOCK_DIRECTORY/pid" || true
     fi
   fi
-  if [[ "$existing_pid" =~ ^[1-9][0-9]*$ && "$existing_pid" != "1" ]] && \
-     kill -0 "$existing_pid" 2>/dev/null; then
+  [[ "$existing_pid" =~ ^[1-9][0-9]*$ && "$existing_pid" != "1" ]] || return 1
+  if kill -0 "$existing_pid" 2>/dev/null; then
     return 1
   fi
 

@@ -264,6 +264,18 @@ actual_calls="$(cat "$capture_path")"
 }
 
 : >"$capture_path"
+mkdir -p "$stale_lock"
+empty_collector_lock_output="$(HOME="$temporary_directory/home" \
+  SCHEDULE_CAPTURE_PATH="$capture_path" \
+  bash "$SCHEDULE_ROOT/macos/run.sh" --config "$config" 2>&1)"
+[[ "$empty_collector_lock_output" == *'"phase":"lock","status":"skipped"'* \
+  && ! -s "$capture_path" && -d "$stale_lock" && ! -e "$stale_lock/pid" ]] || {
+  printf 'collector stole a lock whose owner publication was still pending\n' >&2
+  exit 1
+}
+rm -rf "$stale_lock"
+
+: >"$capture_path"
 if HOME="$temporary_directory/home" \
   SCHEDULE_CAPTURE_PATH="$capture_path" \
   SCHEDULE_FAIL_SOURCE_TYPE="CODEX" \
@@ -404,6 +416,40 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   printf '#!/usr/bin/env bash\nexit 0\n' >"$runtime_fake_node"
   chmod 600 "$runtime_project/.env.local"
   chmod 700 "$runtime_fake_node"
+
+  runtime_ancestor_home="$temporary_directory/runtime-ancestor-home"
+  mkdir -p \
+    "$runtime_ancestor_home/node_modules/next/dist/bin" \
+    "$runtime_ancestor_home/apps/web/.next"
+  : >"$runtime_ancestor_home/node_modules/next/dist/bin/next"
+  printf 'runtime-test-build\n' >"$runtime_ancestor_home/apps/web/.next/BUILD_ID"
+  printf 'APP_BASE_URL=http://172.18.209.21:3000\n' \
+    >"$runtime_ancestor_home/.env.local"
+  chmod 600 "$runtime_ancestor_home/.env.local"
+  if HOME="$runtime_ancestor_home" \
+    bash "$SCHEDULE_ROOT/macos-runtime/deploy.sh" \
+      --project-root "$runtime_ancestor_home" --node "$runtime_fake_node" --dry-run \
+      >"$temporary_directory/runtime-ancestor.out" 2>&1; then
+    printf 'runtime deploy accepted a project root containing its managed runtime\n' >&2
+    exit 1
+  fi
+
+  runtime_empty_lock_home="$temporary_directory/runtime-empty-lock-home"
+  runtime_empty_lock="$runtime_empty_lock_home/Library/Caches/AIWorklog/runtime-deploy.lock"
+  mkdir -p "$runtime_empty_lock"
+  if HOME="$runtime_empty_lock_home" \
+    bash "$SCHEDULE_ROOT/macos-runtime/deploy.sh" \
+      --project-root "$runtime_project" --node "$runtime_fake_node" \
+      >"$temporary_directory/runtime-empty-lock.out" 2>&1; then
+    printf 'runtime deploy stole a lock whose owner publication was still pending\n' >&2
+    exit 1
+  fi
+  grep -q '"phase":"deployment-lock","status":"failed"' \
+    "$temporary_directory/runtime-empty-lock.out"
+  [[ -d "$runtime_empty_lock" && ! -e "$runtime_empty_lock/pid" ]] || {
+    printf 'runtime deploy mutated an indeterminate deployment lock\n' >&2
+    exit 1
+  }
 
   runtime_nested_project="$temporary_directory/runtime nested project"
   runtime_nested_target="$temporary_directory/runtime nested target"
@@ -546,6 +592,20 @@ worker_lock_output="$(HOME="$temporary_directory/worker-home" \
 [[ "$worker_lock_output" == *'"phase":"lock","status":"skipped"'* \
   && ! -s "$worker_capture_path" ]] || {
   printf 'worker mutual-exclusion lock did not skip an overlapping run\n' >&2
+  exit 1
+}
+rm -rf "$worker_stale_lock"
+
+: >"$worker_capture_path"
+mkdir -p "$worker_stale_lock"
+worker_empty_lock_output="$(HOME="$temporary_directory/worker-home" \
+  WORKER_SCHEDULE_CAPTURE_PATH="$worker_capture_path" \
+  bash "$SCHEDULE_ROOT/macos-worker/run.sh" \
+    --project-root "$worker_root" --node "$worker_fake_node" 2>&1)"
+[[ "$worker_empty_lock_output" == *'"phase":"lock","status":"skipped"'* \
+  && ! -s "$worker_capture_path" \
+  && -d "$worker_stale_lock" && ! -e "$worker_stale_lock/pid" ]] || {
+  printf 'worker stole a lock whose owner publication was still pending\n' >&2
   exit 1
 }
 rm -rf "$worker_stale_lock"
