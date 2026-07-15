@@ -3,14 +3,44 @@ export interface DashboardAuthConfig {
   password: string;
 }
 
+function isPrivateLanHttpBaseUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" || url.username || url.password) return false;
+    if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname)) {
+      return true;
+    }
+    const octets = url.hostname.split(".").map(Number);
+    if (
+      octets.length !== 4 ||
+      octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+    ) {
+      return false;
+    }
+    return (
+      octets[0] === 10 ||
+      (octets[0] === 172 && (octets[1] ?? 0) >= 16 && (octets[1] ?? 0) <= 31) ||
+      (octets[0] === 192 && octets[1] === 168)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function dashboardAuthConfig(
   environment: Record<string, string | undefined>
 ): DashboardAuthConfig {
   const username = environment.DASHBOARD_USERNAME?.trim() ?? "";
   const password = environment.DASHBOARD_PASSWORD ?? "";
+  const weakPasswordAllowed =
+    environment.DASHBOARD_ALLOW_WEAK_PASSWORD === "true" &&
+    isPrivateLanHttpBaseUrl(environment.APP_BASE_URL);
+  const passwordLengthValid =
+    password.length >= 16 || (weakPasswordAllowed && password.length >= 5);
   if (
     !/^[A-Za-z0-9._-]{1,64}$/.test(username) ||
-    password.length < 16 ||
+    !passwordLengthValid ||
     password.length > 256 ||
     !/^[\x20-\x7e]+$/.test(password)
   ) {

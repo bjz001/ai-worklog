@@ -29,4 +29,32 @@ describe("dashboard authorization", () => {
       })
     ).toThrow("DASHBOARD");
   });
+
+  it("allows the explicitly approved admin credential only on a private LAN", () => {
+    expect(
+      dashboardAuthConfig({
+        APP_BASE_URL: "http://172.18.209.21:3000",
+        DASHBOARD_ALLOW_WEAK_PASSWORD: "true",
+        DASHBOARD_USERNAME: "admin",
+        DASHBOARD_PASSWORD: "admin"
+      })
+    ).toEqual({ username: "admin", password: "admin" });
+
+    expect(() =>
+      dashboardAuthConfig({
+        APP_BASE_URL: "http://172.18.209.21:3000",
+        DASHBOARD_USERNAME: "admin",
+        DASHBOARD_PASSWORD: "admin"
+      })
+    ).toThrow("DASHBOARD");
+
+    expect(() =>
+      dashboardAuthConfig({
+        APP_BASE_URL: "https://worklog.example.com",
+        DASHBOARD_ALLOW_WEAK_PASSWORD: "true",
+        DASHBOARD_USERNAME: "admin",
+        DASHBOARD_PASSWORD: "admin"
+      })
+    ).toThrow("DASHBOARD");
+  });
 });
