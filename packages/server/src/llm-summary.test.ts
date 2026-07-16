@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   generateLlmDailySummary,
+  generateLlmPeriodSummary,
+  selectBalancedPeriodEvidence,
   type SummaryEvidence
 } from "./llm-summary";
 
@@ -114,6 +116,23 @@ describe("generateLlmDailySummary", () => {
     expect(result.highlights).toEqual([]);
   });
 
+  it("never marks an empty daily summary complete", async () => {
+    const fetcher = vi.fn();
+    const result = await generateLlmDailySummary({
+      settings,
+      workDate: "2026-07-15",
+      timeZone: "Asia/Shanghai",
+      expectedDeviceIds: ["mac"],
+      arrivedDeviceIds: ["mac"],
+      evidence: [],
+      fetcher,
+      resolver
+    });
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.status).toBe("partial");
+  });
+
   it("defaults optional sections while preserving evidence validation", async () => {
     const fetcher = async () => completion({
       highlights: [{ text: "完成设置。", evidenceIds: ["E001"] }]
@@ -181,5 +200,90 @@ describe("generateLlmDailySummary", () => {
     expect(suppliedEvidenceCount).toBeGreaterThanOrEqual(1);
     expect(result.completenessNote).toContain("截断");
     expect(result.completenessNote).not.toContain("模型声称");
+  });
+});
+
+describe("period LLM summaries", () => {
+  it("selects evidence evenly across dates and projects", () => {
+    const items = [
+      ["a-1", "2026-07-01", "project-a"],
+      ["a-2", "2026-07-01", "project-a"],
+      ["b-1", "2026-07-01", "project-b"],
+      ["c-1", "2026-07-02", "project-a"],
+      ["d-1", "2026-07-02", "project-b"]
+    ].map(([id, workDate, projectId], index) => ({
+      ...evidence[0]!,
+      id: id!,
+      workDate,
+      projectId: projectId!,
+      projectName: projectId!,
+      contentHash: String(index).padStart(64, "0"),
+      occurredAt: `${workDate}T0${index}:00:00.000Z`
+    }));
+
+    const selected = selectBalancedPeriodEvidence(items, 4);
+
+    expect(selected).toHaveLength(4);
+    expect(new Set(selected.map((item) => `${item.workDate}:${item.projectId}`)).size)
+      .toBe(4);
+  });
+
+  it("uses configured LLM with raw prompts and answers for a high-level report", async () => {
+    const fetcher = vi.fn(async (_input: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      expect(body.messages[0]?.content).toContain("high-level Chinese monthly work report");
+      expect(body.messages[1]?.content).toContain(evidence[0]!.content);
+      expect(body.messages[1]?.content).toContain(evidence[0]!.result);
+      return completion({
+        overview: [{ text: "本月完成工作沉淀平台核心链路。", evidenceIds: ["E001"] }],
+        majorAccomplishments: [{ text: "完成安全的 LLM 配置。", evidenceIds: ["E001"] }],
+        projectProgress: [{ text: "AI 工作台具备总结能力。", evidenceIds: ["E001"] }],
+        decisions: [],
+        blockers: [],
+        nextFocus: [{ text: "继续验证跨设备数据。", evidenceIds: ["E001"] }],
+        completenessNote: "由模型生成。"
+      });
+    });
+
+    await expect(generateLlmPeriodSummary({
+      settings,
+      periodType: "MONTH",
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-31",
+      timeZone: "Asia/Shanghai",
+      expectedDeviceIds: ["mac"],
+      arrivedDeviceIds: ["mac"],
+      evidence,
+      fetcher,
+      resolver
+    })).resolves.toMatchObject({
+      dataCompleteness: "complete",
+      hasContent: true,
+      inputTruncated: false,
+      overview: [{ evidenceIds: ["event-1"] }],
+      majorAccomplishments: [{ evidenceIds: ["event-1"] }]
+    });
+  });
+
+  it("does not call the LLM for an empty period", async () => {
+    const fetcher = vi.fn();
+    const result = await generateLlmPeriodSummary({
+      settings,
+      periodType: "WEEK",
+      periodStart: "2026-07-13",
+      periodEnd: "2026-07-19",
+      timeZone: "Asia/Shanghai",
+      expectedDeviceIds: ["mac"],
+      arrivedDeviceIds: [],
+      evidence: [],
+      fetcher,
+      resolver
+    });
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.hasContent).toBe(false);
+    expect(result.dataCompleteness).toBe("partial");
   });
 });
