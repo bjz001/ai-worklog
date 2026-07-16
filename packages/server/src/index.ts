@@ -66,6 +66,12 @@ export {
   type RefreshPeriodInsightResult
 } from "./period-insight-service";
 export {
+  dailySummaryExportFilename,
+  periodSummaryExportFilename,
+  renderDailySummaryMarkdown,
+  renderPeriodSummaryMarkdown
+} from "./summary-export";
+export {
   accountTimeZone,
   getCalendar,
   getDashboard,
