@@ -267,6 +267,47 @@ describe("period LLM summaries", () => {
     });
   });
 
+  it("normalizes common period JSON aliases while keeping evidence references strict", async () => {
+    const fetcher = async () => completion({
+      overview: [
+        { summary: "本周推进了关键交付。", evidenceRefs: "E001" },
+        { text: "这条缺少证据引用，会被丢弃。" }
+      ],
+      majorAchievements: Array.from({ length: 10 }, (_, index) => ({
+        text: `完成事项 ${index + 1}`,
+        evidenceRef: "E001"
+      })),
+      projectProgress: [],
+      decisions: [],
+      blockers: [],
+      nextActions: [{ description: "继续收敛同步体验。", references: ["E001"] }],
+      note: "由模型生成。"
+    });
+
+    const result = await generateLlmPeriodSummary({
+      settings,
+      periodType: "WEEK",
+      periodStart: "2026-07-13",
+      periodEnd: "2026-07-19",
+      timeZone: "Asia/Shanghai",
+      expectedDeviceIds: ["mac"],
+      arrivedDeviceIds: ["mac"],
+      evidence,
+      fetcher,
+      resolver
+    });
+
+    expect(result).toMatchObject({
+      hasContent: true,
+      overview: [{ evidenceIds: ["event-1"] }],
+      majorAccomplishments: expect.arrayContaining([
+        expect.objectContaining({ evidenceIds: ["event-1"] })
+      ]),
+      nextFocus: [{ evidenceIds: ["event-1"] }]
+    });
+    expect(result.majorAccomplishments).toHaveLength(8);
+  });
+
   it("does not call the LLM for an empty period", async () => {
     const fetcher = vi.fn();
     const result = await generateLlmPeriodSummary({

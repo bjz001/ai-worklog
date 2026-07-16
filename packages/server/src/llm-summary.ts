@@ -26,21 +26,108 @@ const SUMMARY_SYSTEM_PROMPT = [
   "Each array item is {text,evidenceIds}. Return JSON only."
 ].join(" ");
 
-const StatementSchema = z
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function firstDefined(
+  record: Record<string, unknown>,
+  keys: readonly string[]
+): unknown {
+  for (const key of keys) {
+    if (record[key] !== undefined) return record[key];
+  }
+  return undefined;
+}
+
+function normalizeEvidenceIds(value: unknown): unknown {
+  if (typeof value === "string") {
+    const references = value.match(/\bE\d{3,}\b/gu);
+    return references ?? [value];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (typeof item !== "string") return [item];
+      const references = item.match(/\bE\d{3,}\b/gu);
+      return references ?? [item];
+    });
+  }
+  return value;
+}
+
+const EvidenceIdsSchema = z.preprocess(
+  normalizeEvidenceIds,
+  z.array(z.string().trim().min(1).max(64))
+    .min(1)
+    .transform((ids) => [...new Set(ids)].slice(0, 8))
+);
+
+const StatementSchema = z.preprocess((value) => {
+  const record = recordValue(value);
+  return {
+    ...record,
+    text: firstDefined(record, ["text", "summary", "description", "title"]),
+    evidenceIds: firstDefined(record, [
+      "evidenceIds",
+      "evidence_refs",
+      "evidenceRefs",
+      "evidenceRef",
+      "references",
+      "refs"
+    ])
+  };
+}, z
   .object({
     text: z.string().trim().min(1).max(1_200),
-    evidenceIds: z.array(z.string().min(1).max(64)).min(1).max(8)
+    evidenceIds: EvidenceIdsSchema
   })
-  .strip();
+  .strip());
 
-const LlmPeriodSummaryDraftSchema = z
+function statementArray(max: number) {
+  return z.preprocess((value) => {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object") return [value];
+    return [];
+  }, z.array(z.unknown()).transform((items) =>
+    items.flatMap((item) => {
+      const parsed = StatementSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    }).slice(0, max)
+  ));
+}
+
+const LlmPeriodSummaryDraftSchema = z.preprocess((value) => {
+  const record = recordValue(value);
+  return {
+    ...record,
+    majorAccomplishments: firstDefined(record, [
+      "majorAccomplishments",
+      "majorAchievements",
+      "accomplishments",
+      "highlights"
+    ]),
+    nextFocus: firstDefined(record, [
+      "nextFocus",
+      "nextActions",
+      "nextSteps",
+      "futureFocus"
+    ]),
+    completenessNote: firstDefined(record, [
+      "completenessNote",
+      "coverageNote",
+      "note"
+    ])
+  };
+}, z
   .object({
-    overview: z.array(StatementSchema).min(1).max(4),
-    majorAccomplishments: z.array(StatementSchema).min(1).max(8),
-    projectProgress: z.array(StatementSchema).max(12).default([]),
-    decisions: z.array(StatementSchema).max(8).default([]),
-    blockers: z.array(StatementSchema).max(8).default([]),
-    nextFocus: z.array(StatementSchema).max(8).default([]),
+    overview: statementArray(4),
+    majorAccomplishments: statementArray(8),
+    projectProgress: statementArray(12),
+    decisions: statementArray(8),
+    blockers: statementArray(8),
+    nextFocus: statementArray(8),
     completenessNote: z
       .string()
       .trim()
@@ -48,15 +135,31 @@ const LlmPeriodSummaryDraftSchema = z
       .max(1_200)
       .default("由模型基于周期内的 Prompt 与回答生成。")
   })
-  .strip();
+  .strip());
 
-const LlmSummaryDraftSchema = z
+const LlmSummaryDraftSchema = z.preprocess((value) => {
+  const record = recordValue(value);
+  return {
+    ...record,
+    highlights: firstDefined(record, ["highlights", "overview"]),
+    nextActions: firstDefined(record, [
+      "nextActions",
+      "nextFocus",
+      "nextSteps"
+    ]),
+    completenessNote: firstDefined(record, [
+      "completenessNote",
+      "coverageNote",
+      "note"
+    ])
+  };
+}, z
   .object({
-    highlights: z.array(StatementSchema).min(1).max(8),
-    projectProgress: z.array(StatementSchema).max(16).default([]),
-    decisions: z.array(StatementSchema).max(8).default([]),
-    blockers: z.array(StatementSchema).max(8).default([]),
-    nextActions: z.array(StatementSchema).max(8).default([]),
+    highlights: statementArray(8),
+    projectProgress: statementArray(16),
+    decisions: statementArray(8),
+    blockers: statementArray(8),
+    nextActions: statementArray(8),
     completenessNote: z
       .string()
       .trim()
@@ -64,7 +167,7 @@ const LlmSummaryDraftSchema = z
       .max(1_200)
       .default("由模型基于当日证据生成。")
   })
-  .strip();
+  .strip());
 
 export interface SummaryEvidence {
   id: string;
@@ -617,6 +720,14 @@ export async function generateLlmPeriodSummary(options: {
     draft,
     evidenceByReference
   );
+  const hasContent = [
+    validatedDraft.overview,
+    validatedDraft.majorAccomplishments,
+    validatedDraft.projectProgress,
+    validatedDraft.decisions,
+    validatedDraft.blockers,
+    validatedDraft.nextFocus
+  ].some((section) => section.length > 0);
   const inputTruncated = selectionTruncated || packed.truncated;
   const truncatedNote = inputTruncated
     ? ` 为满足模型请求大小限制，本次按日期和项目均衡选取并可能截断证据，使用 ${packed.referencedEvidence.length}/${sourceEvidenceCount} 条。`
@@ -631,7 +742,7 @@ export async function generateLlmPeriodSummary(options: {
       deviceCoverage.status === "complete" && !inputTruncated
         ? "complete"
         : "partial",
-    hasContent: true,
+    hasContent,
     inputTruncated,
     overview: validatedDraft.overview,
     majorAccomplishments: validatedDraft.majorAccomplishments,
