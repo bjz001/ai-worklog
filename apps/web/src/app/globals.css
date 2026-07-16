@@ -725,6 +725,13 @@ button:disabled {
   justify-self: start;
 }
 
+.summary-detail-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .summary-detail-section .muted {
   margin: 0;
 }
@@ -976,6 +983,15 @@ button:disabled {
   text-align: center;
 }
 
+.calendar-mode-surface {
+  margin-bottom: var(--space-4);
+}
+
+.calendar-mode-surface .tabs {
+  border-bottom: 0;
+  padding: 0 var(--space-2);
+}
+
 .calendar-surface {
   border-radius: var(--radius-md);
 }
@@ -1064,6 +1080,87 @@ button:disabled {
 .calendar-state--success { color: var(--color-success) !important; }
 .calendar-state--warning { color: var(--color-warning) !important; }
 .calendar-state--neutral { color: var(--color-text-secondary) !important; }
+
+.period-switcher {
+  align-items: center;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 24px;
+  display: flex;
+  gap: var(--space-1);
+  padding: 0 var(--space-1);
+}
+
+.period-switcher strong {
+  min-width: 220px;
+  text-align: center;
+}
+
+.period-summary-body {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.period-summary-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.period-summary-toolbar {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--color-border-soft);
+  display: flex;
+  gap: var(--space-4);
+  justify-content: space-between;
+  padding-bottom: var(--space-4);
+}
+
+.period-summary-status {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.period-summary-status p {
+  margin: 0;
+}
+
+.period-summary-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.period-summary-content {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.period-summary-content h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 var(--space-2);
+}
+
+.period-summary-empty {
+  align-items: flex-start;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.period-summary-empty h3,
+.period-summary-empty p {
+  margin: 0;
+}
+
+.period-summary-empty p {
+  color: var(--color-text-secondary);
+  margin-top: var(--space-1);
+}
 
 .sync-callout__body {
   align-items: center;
@@ -1401,6 +1498,8 @@ code {
   .inbox-row__meta { display: none; }
   .calendar-cell { min-height: 116px; padding: var(--space-2); }
   .calendar-cell__content strong { font-size: 12px; }
+  .period-summary-toolbar { align-items: stretch; flex-direction: column; }
+  .period-summary-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 760px) {
@@ -1444,6 +1543,10 @@ code {
   .calendar-cell { min-height: 92px; }
   .calendar-cell__content > span,
   .calendar-cell__empty { display: none; }
+  .period-switcher strong { min-width: 156px; }
+  .period-summary-metrics { grid-template-columns: 1fr; }
+  .period-summary-actions .button,
+  .summary-detail-actions .button { justify-content: center; width: 100%; }
   .sync-callout__body { align-items: stretch; flex-direction: column; }
   .privacy-action { grid-template-columns: 40px minmax(0, 1fr); }
   .privacy-action .button { grid-column: 1 / -1; }

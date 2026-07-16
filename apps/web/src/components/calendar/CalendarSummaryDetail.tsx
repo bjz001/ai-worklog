@@ -31,6 +31,10 @@ const sections: Array<{
   { key: "nextActions", title: "下一步" }
 ];
 
+function dailyExportHref(date: string): string {
+  return `/api/v1/summaries/export?date=${encodeURIComponent(date)}`;
+}
+
 export function CalendarSummaryDetail({
   date,
   activity,
@@ -69,8 +73,7 @@ export function CalendarSummaryDetail({
     }
   };
 
-  const canGenerate = (activity?.promptCount ?? 0) > 0 &&
-    (!summary || summary.status === "partial");
+  const canGenerate = (activity?.promptCount ?? 0) > 0;
 
   return (
     <div className="stack">
@@ -106,14 +109,25 @@ export function CalendarSummaryDetail({
           {activity?.hasSyncError ? <p className="muted">当天存在同步异常，结论可能缺少部分设备数据。</p> : null}
           {summary ? <p className="muted">{summary.completenessNote}</p> : null}
           {canGenerate ? (
-            <button className="button button--primary" disabled={generating} onClick={() => void generate()} type="button">
-              <Icon name={generating ? "schedule" : "refresh"} />
-              {generating
-                ? "LLM 正在总结…"
-                : summary
-                  ? "让 LLM 重新总结"
-                  : "让 LLM 生成总结"}
-            </button>
+            <div className="summary-detail-actions">
+              <button className="button button--primary" disabled={generating} onClick={() => void generate()} type="button">
+                <Icon name={generating ? "schedule" : "refresh"} />
+                {generating
+                  ? "LLM 正在总结…"
+                  : summary
+                    ? "让 LLM 重新总结"
+                    : "让 LLM 生成总结"}
+              </button>
+              {summary ? (
+                <a
+                  aria-label="导出日总结 Markdown"
+                  className="button button--secondary"
+                  href={dailyExportHref(date)}
+                >
+                  <Icon name="download" />导出 Markdown
+                </a>
+              ) : null}
+            </div>
           ) : null}
           {!summary && (activity?.promptCount ?? 0) === 0 ? (
             <p className="muted">当天没有 Prompt，无需生成工作总结。</p>

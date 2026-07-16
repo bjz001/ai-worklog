@@ -1,9 +1,14 @@
 "use client";
 
-import type { CalendarDayView, CalendarResponse } from "@ai-worklog/contracts";
+import type {
+  CalendarDayView,
+  CalendarResponse,
+  SummaryPeriodType
+} from "@ai-worklog/contracts";
 import { useMemo, useState } from "react";
 
 import { CalendarSummaryDetail } from "@/components/calendar/CalendarSummaryDetail";
+import { PeriodSummaryPanel } from "@/components/calendar/PeriodSummaryPanel";
 import { useDetailDrawer } from "@/components/shell/DrawerContext";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -19,6 +24,13 @@ import { collectionState } from "@/lib/api-client";
 import { formatNumber, formatWorkDate } from "@/lib/presenters";
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+type CalendarMode = "DAY" | SummaryPeriodType;
+
+const calendarModes: Array<{ value: CalendarMode; label: string }> = [
+  { value: "DAY", label: "日总结" },
+  { value: "WEEK", label: "周总结" },
+  { value: "MONTH", label: "月总结" }
+];
 
 function monthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
@@ -42,6 +54,7 @@ function summaryMeta(status: CalendarDayView["summaryStatus"]) {
 
 export function CalendarView() {
   const [month, setMonth] = useState(() => monthKey(new Date()));
+  const [mode, setMode] = useState<CalendarMode>("DAY");
   const path = `/api/v1/calendar?month=${encodeURIComponent(month)}`;
   const { data, error, loading, reload } = useApiResource<CalendarResponse>(path);
   const { openDrawer } = useDetailDrawer();
@@ -75,15 +88,67 @@ export function CalendarView() {
     </div>
   );
 
-  if (state === "loading") return <><PageHeader actions={actions} title="日历" description="按日期回顾 Prompt、项目和总结完整性" /><LoadingState rows={5} /></>;
-  if (state === "error" && error) return <><PageHeader actions={actions} title="日历" description="按日期回顾 Prompt、项目和总结完整性" /><ErrorState error={error} onRetry={reload} /></>;
+  const modeTabs = (
+    <div aria-label="总结周期" className="tabs calendar-tabs" role="tablist">
+      {calendarModes.map((tab) => (
+        <button
+          aria-controls={`calendar-panel-${tab.value.toLowerCase()}`}
+          aria-selected={mode === tab.value}
+          className={`tab ${mode === tab.value ? "tab--active" : ""}`}
+          id={`calendar-tab-${tab.value.toLowerCase()}`}
+          key={tab.value}
+          onClick={() => setMode(tab.value)}
+          role="tab"
+          type="button"
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (mode !== "DAY") {
+    return (
+      <>
+        <PageHeader description="按日、周、月回顾 Prompt、项目和 LLM 总结" title="日历" />
+        <Surface className="calendar-mode-surface">{modeTabs}</Surface>
+        <PeriodSummaryPanel key={mode} periodType={mode} />
+      </>
+    );
+  }
+
+  if (state === "loading") {
+    return (
+      <>
+        <PageHeader actions={actions} title="日历" description="按日期回顾 Prompt、项目和总结完整性" />
+        <Surface className="calendar-mode-surface">{modeTabs}</Surface>
+        <LoadingState rows={5} />
+      </>
+    );
+  }
+  if (state === "error" && error) {
+    return (
+      <>
+        <PageHeader actions={actions} title="日历" description="按日期回顾 Prompt、项目和总结完整性" />
+        <Surface className="calendar-mode-surface">{modeTabs}</Surface>
+        <ErrorState error={error} onRetry={reload} />
+      </>
+    );
+  }
 
   return (
     <>
       <PageHeader actions={actions} description="同一蓝色色阶表示活跃程度，状态同时使用文字和图标" title="日历" />
+      <Surface className="calendar-mode-surface">{modeTabs}</Surface>
       {partial ? <PartialNotice>本月部分日期存在未完成总结或同步异常，可点击日期查看详情。</PartialNotice> : null}
       {state === "empty" ? <EmptyState description="这个月还没有同步到工作记录，可切换月份或前往同步中心。" icon="calendar" title="本月暂无活动" /> : null}
-      <Surface className="calendar-surface">
+      <Surface
+        aria-labelledby="calendar-tab-day"
+        className="calendar-surface"
+        id="calendar-panel-day"
+        role="tabpanel"
+        tabIndex={0}
+      >
         <div aria-hidden="true" className="calendar-grid calendar-grid--header">
           {weekdays.map((weekday) => <div key={weekday}>{weekday}</div>)}
         </div>

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
 import { Icon, type IconName } from "./Icon";
 
@@ -27,16 +27,17 @@ export function Surface({
   description,
   children,
   className = "",
-  actions
+  actions,
+  ...sectionProps
 }: {
   title?: string;
   description?: string;
   children: ReactNode;
   className?: string;
   actions?: ReactNode;
-}) {
+} & Omit<ComponentPropsWithoutRef<"section">, "children">) {
   return (
-    <section className={`surface ${className}`.trim()}>
+    <section className={`surface ${className}`.trim()} {...sectionProps}>
       {title || actions ? (
         <header className="surface__header">
           <div>
