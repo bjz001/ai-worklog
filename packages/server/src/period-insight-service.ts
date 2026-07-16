@@ -32,6 +32,7 @@ import { accountTimeZone } from "./query-service";
 const MAX_PERIOD_EVIDENCE_METADATA = 10_000;
 const MAX_SELECTED_PERIOD_EVIDENCE = 80;
 const EVIDENCE_INSERT_CHUNK_SIZE = 100;
+const PERIOD_EVIDENCE_METADATA_SQL_LIMIT = MAX_PERIOD_EVIDENCE_METADATA + 1;
 
 interface EvidenceMetadataRow extends RowDataPacket {
   id: string;
@@ -308,8 +309,8 @@ async function loadPeriodEvidenceSnapshot(options: {
          ON p.id = pe.project_id AND p.account_id = pe.account_id
       WHERE pe.account_id = ? AND pe.occurred_at >= ? AND pe.occurred_at < ?
       ORDER BY pe.occurred_at ASC
-      LIMIT ?`,
-    [options.accountId, from, until, MAX_PERIOD_EVIDENCE_METADATA + 1]
+      LIMIT ${PERIOD_EVIDENCE_METADATA_SQL_LIMIT}`,
+    [options.accountId, from, until]
   );
   const [aggregateRows] = await options.pool.execute<EvidenceAggregateRow[]>(
     `SELECT COUNT(DISTINCT pe.id) AS prompt_count,
