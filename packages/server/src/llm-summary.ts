@@ -98,6 +98,20 @@ function statementArray(max: number) {
   ));
 }
 
+function noteText(defaultValue: string) {
+  return z.preprocess((value) => {
+    if (typeof value === "string") return value;
+    const record = recordValue(value);
+    return firstDefined(record, [
+      "text",
+      "summary",
+      "description",
+      "note",
+      "message"
+    ]) ?? defaultValue;
+  }, z.string().trim().min(1).max(1_200).default(defaultValue));
+}
+
 const LlmPeriodSummaryDraftSchema = z.preprocess((value) => {
   const record = recordValue(value);
   return {
@@ -128,12 +142,7 @@ const LlmPeriodSummaryDraftSchema = z.preprocess((value) => {
     decisions: statementArray(8),
     blockers: statementArray(8),
     nextFocus: statementArray(8),
-    completenessNote: z
-      .string()
-      .trim()
-      .min(1)
-      .max(1_200)
-      .default("由模型基于周期内的 Prompt 与回答生成。")
+    completenessNote: noteText("由模型基于周期内的 Prompt 与回答生成。")
   })
   .strip());
 
@@ -160,12 +169,7 @@ const LlmSummaryDraftSchema = z.preprocess((value) => {
     decisions: statementArray(8),
     blockers: statementArray(8),
     nextActions: statementArray(8),
-    completenessNote: z
-      .string()
-      .trim()
-      .min(1)
-      .max(1_200)
-      .default("由模型基于当日证据生成。")
+    completenessNote: noteText("由模型基于当日证据生成。")
   })
   .strip());
 

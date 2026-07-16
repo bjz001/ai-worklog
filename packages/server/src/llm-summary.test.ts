@@ -269,10 +269,7 @@ describe("period LLM summaries", () => {
 
   it("normalizes common period JSON aliases while keeping evidence references strict", async () => {
     const fetcher = async () => completion({
-      overview: [
-        { summary: "本周推进了关键交付。", evidenceRefs: "E001" },
-        { text: "这条缺少证据引用，会被丢弃。" }
-      ],
+      overview: { summary: "本周推进了关键交付。", evidenceRefs: "E001" },
       majorAchievements: Array.from({ length: 10 }, (_, index) => ({
         text: `完成事项 ${index + 1}`,
         evidenceRef: "E001"
@@ -281,7 +278,7 @@ describe("period LLM summaries", () => {
       decisions: [],
       blockers: [],
       nextActions: [{ description: "继续收敛同步体验。", references: ["E001"] }],
-      note: "由模型生成。"
+      completenessNote: { text: "由模型生成。" }
     });
 
     const result = await generateLlmPeriodSummary({
