@@ -3,6 +3,8 @@ import type {
   CalendarResponse,
   DashboardResponse,
   DeviceView,
+  PeriodSummaryActivityView,
+  PeriodSummaryView,
   PrivacyResponse,
   ProjectView,
   ProjectsResponse,
@@ -11,6 +13,7 @@ import type {
   SkillCandidateView,
   SkillsResponse,
   SummaryView,
+  SummaryPeriodType,
   SyncResponse,
   SyncRunView
 } from "@ai-worklog/contracts";
@@ -22,6 +25,7 @@ import {
   utcRangeForWorkDate,
   workDateInTimeZone
 } from "./presentation";
+import { summaryPeriod } from "./periods";
 
 interface TimeZoneRow extends RowDataPacket {
   time_zone: string;
@@ -73,6 +77,20 @@ interface SummaryRow extends RowDataPacket {
   work_date: string | Date;
   status: string;
   content: unknown;
+}
+
+interface PeriodSummaryRow extends RowDataPacket {
+  id: string;
+  period_type: SummaryPeriodType;
+  period_start: string | Date;
+  period_end: string | Date;
+  status: string;
+  content: unknown;
+}
+
+interface PeriodActivityRow extends RowDataPacket {
+  occurred_at: Date;
+  project_id: string | null;
 }
 
 interface EvidenceRow extends RowDataPacket {
@@ -606,6 +624,139 @@ export async function getSummaryForDate(options: {
       projectName: evidence.project_name ?? "未分类项目",
       occurredAt: isoDateTime(evidence.occurred_at) ?? new Date(0).toISOString()
     }))
+  };
+}
+
+export async function getPeriodActivity(options: {
+  pool: Pool;
+  accountId: string;
+  periodType: SummaryPeriodType;
+  periodStart: string;
+}): Promise<PeriodSummaryActivityView> {
+  const period = summaryPeriod(options.periodType, options.periodStart);
+  const timeZone = await accountTimeZone(options.pool, options.accountId);
+  const from = utcRangeForWorkDate(period.periodStart, timeZone).from;
+  const until = utcRangeForWorkDate(period.periodEnd, timeZone).until;
+  const [rows] = await options.pool.execute<PeriodActivityRow[]>(
+    `SELECT occurred_at, project_id FROM prompt_entries
+      WHERE account_id = ? AND occurred_at >= ? AND occurred_at < ?
+      ORDER BY occurred_at ASC`,
+    [options.accountId, from, until]
+  );
+  return {
+    ...period,
+    promptCount: rows.length,
+    projectCount: new Set(
+      rows.flatMap((row) => row.project_id ? [row.project_id] : [])
+    ).size,
+    activeDayCount: new Set(
+      rows.map((row) => workDateInTimeZone(row.occurred_at, timeZone))
+    ).size
+  };
+}
+
+export async function getPeriodSummary(options: {
+  pool: Pool;
+  accountId: string;
+  periodType: SummaryPeriodType;
+  periodStart: string;
+}): Promise<PeriodSummaryView | null> {
+  const period = summaryPeriod(options.periodType, options.periodStart);
+  const [rows] = await options.pool.execute<PeriodSummaryRow[]>(
+    `SELECT id, period_type, period_start, period_end, status, content
+       FROM period_summaries
+      WHERE account_id = ? AND period_type = ? AND period_start = ?
+      ORDER BY revision DESC
+      LIMIT 1`,
+    [options.accountId, period.periodType, period.periodStart]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const content = recordValue(row.content);
+  const sections = {
+    overview: statementList(content.overview),
+    majorAccomplishments: statementList(content.majorAccomplishments),
+    projectProgress: statementList(content.projectProgress),
+    decisions: statementList(content.decisions),
+    blockers: statementList(content.blockers),
+    nextFocus: statementList(content.nextFocus)
+  };
+  const [evidenceRows] = await options.pool.execute<EvidenceRow[]>(
+    `SELECT ce.id, pse.excerpt,
+            COALESCE(p.name, '未分类项目') AS project_name, ce.occurred_at
+       FROM period_summary_evidence pse
+       JOIN collected_events ce
+         ON ce.id = pse.collected_event_id AND ce.account_id = pse.account_id
+       LEFT JOIN projects p
+         ON p.id = ce.project_id AND p.account_id = ce.account_id
+      WHERE pse.account_id = ? AND pse.summary_id = ?
+      GROUP BY ce.id, pse.excerpt, p.name, ce.occurred_at
+      ORDER BY ce.occurred_at ASC`,
+    [options.accountId, row.id]
+  );
+  const evidenceById = new Map(
+    evidenceRows.map((evidence) => [evidence.id, evidence])
+  );
+  const referencedEvidenceIds = [
+    ...new Set(
+      Object.values(sections)
+        .flatMap((statements) => statements)
+        .flatMap((statement) => statement.evidenceIds)
+        .filter((id) => id.length > 0 && id.length <= 64)
+    )
+  ].slice(0, 256);
+  const missingEvidenceIds = referencedEvidenceIds.filter(
+    (id) => !evidenceById.has(id)
+  );
+  if (missingEvidenceIds.length > 0) {
+    const placeholders = missingEvidenceIds.map(() => "?").join(", ");
+    const [fallbackRows] = await options.pool.execute<EvidenceRow[]>(
+      `SELECT ce.id,
+              LEFT(COALESCE(pe.sanitized_content, ev.sanitized_content,
+                            '已脱敏证据'), 240) AS excerpt,
+              COALESCE(p.name, '未分类项目') AS project_name,
+              ce.occurred_at
+         FROM collected_events ce
+         LEFT JOIN prompt_entries pe
+           ON pe.collected_event_id = ce.id AND pe.account_id = ce.account_id
+         LEFT JOIN event_versions ev
+           ON ev.collected_event_id = ce.id AND ev.account_id = ce.account_id
+          AND ev.version = ce.current_version
+         LEFT JOIN projects p
+           ON p.id = ce.project_id AND p.account_id = ce.account_id
+        WHERE ce.account_id = ? AND ce.id IN (${placeholders})
+        ORDER BY ce.occurred_at ASC`,
+      [options.accountId, ...missingEvidenceIds]
+    );
+    for (const evidence of fallbackRows) {
+      if (!evidenceById.has(evidence.id)) evidenceById.set(evidence.id, evidence);
+    }
+  }
+  const hasContent = Object.values(sections).some(
+    (statements) => statements.length > 0
+  );
+  return {
+    id: row.id,
+    periodType: row.period_type,
+    periodStart: mysqlWorkDate(row.period_start),
+    periodEnd: mysqlWorkDate(row.period_end),
+    dataCompleteness:
+      row.status === "COMPLETE" && hasContent ? "complete" : "partial",
+    hasContent,
+    inputTruncated: content.inputTruncated === true,
+    ...sections,
+    completenessNote:
+      typeof content.completenessNote === "string"
+        ? content.completenessNote
+        : "总结完整性信息缺失。",
+    evidence: [...evidenceById.values()]
+      .sort((left, right) => left.occurred_at.getTime() - right.occurred_at.getTime())
+      .map((evidence) => ({
+        id: evidence.id,
+        excerpt: evidence.excerpt ?? "已脱敏证据",
+        projectName: evidence.project_name ?? "未分类项目",
+        occurredAt: isoDateTime(evidence.occurred_at) ?? new Date(0).toISOString()
+      }))
   };
 }
 

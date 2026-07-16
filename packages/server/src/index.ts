@@ -44,6 +44,9 @@ export {
 export {
   LlmSummaryError,
   generateLlmDailySummary,
+  generateLlmPeriodSummary,
+  selectBalancedPeriodEvidence,
+  type GeneratedLlmPeriodSummary,
   type GeneratedLlmSummary,
   type SummaryEvidence
 } from "./llm-summary";
@@ -55,9 +58,19 @@ export {
   type RefreshInsightResult
 } from "./insight-service";
 export {
+  PeriodSummaryServiceError,
+  periodSummaryEvidenceStatements,
+  periodSummaryFingerprint,
+  periodSummaryLockName,
+  refreshPeriodInsights,
+  type RefreshPeriodInsightResult
+} from "./period-insight-service";
+export {
   accountTimeZone,
   getCalendar,
   getDashboard,
+  getPeriodActivity,
+  getPeriodSummary,
   getSummaryForDate,
   getPrivacyResponse,
   getProjectsResponse,
@@ -82,6 +95,7 @@ export {
   parsePromptQuery,
   type PromptQuery
 } from "./query-input";
+export { summaryPeriod, type SummaryPeriod } from "./periods";
 export { workDateInTimeZone } from "./presentation";
 export {
   BatchConflictError,

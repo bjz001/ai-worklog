@@ -553,6 +553,7 @@ export async function generateLlmPeriodSummary(options: {
   expectedDeviceIds: readonly string[];
   arrivedDeviceIds: readonly string[];
   evidence: readonly SummaryEvidence[];
+  sourceEvidenceCount?: number;
   fetcher?: LlmFetcher;
   resolver?: LlmResolver;
 }): Promise<GeneratedLlmPeriodSummary> {
@@ -581,7 +582,11 @@ export async function generateLlmPeriodSummary(options: {
     options.evidence,
     MAX_LLM_EVIDENCE
   );
-  const selectionTruncated = selectedEvidence.length < options.evidence.length;
+  const sourceEvidenceCount = Math.max(
+    options.evidence.length,
+    options.sourceEvidenceCount ?? options.evidence.length
+  );
+  const selectionTruncated = selectedEvidence.length < sourceEvidenceCount;
   const packed = packEvidence({
     settings: options.settings,
     input: {
@@ -614,7 +619,7 @@ export async function generateLlmPeriodSummary(options: {
   );
   const inputTruncated = selectionTruncated || packed.truncated;
   const truncatedNote = inputTruncated
-    ? ` 为满足模型请求大小限制，本次按日期和项目均衡选取并可能截断证据，使用 ${packed.referencedEvidence.length}/${options.evidence.length} 条。`
+    ? ` 为满足模型请求大小限制，本次按日期和项目均衡选取并可能截断证据，使用 ${packed.referencedEvidence.length}/${sourceEvidenceCount} 条。`
     : "";
 
   return {

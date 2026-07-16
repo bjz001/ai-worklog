@@ -286,4 +286,31 @@ describe("period LLM summaries", () => {
     expect(result.hasContent).toBe(false);
     expect(result.dataCompleteness).toBe("partial");
   });
+
+  it("discloses when the source snapshot exceeded its safe metadata cap", async () => {
+    const fetcher = async () => completion({
+      overview: [{ text: "完成核心工作。", evidenceIds: ["E001"] }],
+      majorAccomplishments: [{ text: "交付功能。", evidenceIds: ["E001"] }],
+      projectProgress: [],
+      decisions: [],
+      blockers: [],
+      nextFocus: []
+    });
+    const result = await generateLlmPeriodSummary({
+      settings,
+      periodType: "MONTH",
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-31",
+      timeZone: "Asia/Shanghai",
+      expectedDeviceIds: ["mac"],
+      arrivedDeviceIds: ["mac"],
+      evidence,
+      sourceEvidenceCount: 2,
+      fetcher,
+      resolver
+    });
+
+    expect(result.inputTruncated).toBe(true);
+    expect(result.completenessNote).toContain("1/2");
+  });
 });
