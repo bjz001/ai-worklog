@@ -9,6 +9,8 @@ import {
   devices,
   eventVersions,
   llmSettings,
+  periodSummaries,
+  periodSummaryEvidence,
   projects,
   promptEntries,
   sessions,
@@ -35,8 +37,10 @@ describe("MySQL schema", () => {
         promptEntries,
         visibleResults,
         dailySummaries,
+        periodSummaries,
         summaryJobs,
         summaryEvidence,
+        periodSummaryEvidence,
         skillCandidates,
         auditLogs
       ].map(getTableName)
@@ -53,8 +57,10 @@ describe("MySQL schema", () => {
       "prompt_entries",
       "visible_results",
       "daily_summaries",
+      "period_summaries",
       "summary_jobs",
       "summary_evidence",
+      "period_summary_evidence",
       "skill_candidates",
       "audit_logs"
     ]);

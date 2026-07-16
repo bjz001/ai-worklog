@@ -539,6 +539,60 @@ export const dailySummaries = mysqlTable(
   ]
 );
 
+export const periodSummaries = mysqlTable(
+  "period_summaries",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    accountId: varchar("account_id", { length: 64 })
+      .notNull()
+      .references(() => accounts.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    periodType: mysqlEnum("period_type", ["WEEK", "MONTH"]).notNull(),
+    periodStart: date("period_start", { mode: "string" }).notNull(),
+    periodEnd: date("period_end", { mode: "string" }).notNull(),
+    timeZone: varchar("time_zone", { length: 64 }).notNull(),
+    revision: int("revision", { unsigned: true }).notNull(),
+    status: mysqlEnum("status", [
+      "WAITING",
+      "COMPLETE",
+      "PARTIAL",
+      "STALE",
+      "REGENERATING",
+      "FAILED"
+    ]).notNull(),
+    inputFingerprint: char("input_fingerprint", { length: 64 }).notNull(),
+    content: longtext("content").notNull(),
+    coverage: json("coverage").$type<Record<string, unknown>>().notNull(),
+    modelProvider: varchar("model_provider", { length: 64 }),
+    modelName: varchar("model_name", { length: 128 }),
+    templateVersion: varchar("template_version", { length: 64 }).notNull(),
+    isManuallyEdited: boolean("is_manually_edited").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex("uq_period_summaries_account_period_revision").on(
+      table.accountId,
+      table.periodType,
+      table.periodStart,
+      table.revision
+    ),
+    uniqueIndex("uq_period_summaries_account_period_fingerprint").on(
+      table.accountId,
+      table.periodType,
+      table.periodStart,
+      table.inputFingerprint
+    ),
+    index("ix_period_summaries_account_end").on(
+      table.accountId,
+      table.periodEnd
+    ),
+    check("chk_period_summaries_range", sql`${table.periodEnd} >= ${table.periodStart}`)
+  ]
+);
+
 export const summaryJobs = mysqlTable(
   "summary_jobs",
   {
@@ -606,6 +660,51 @@ export const summaryEvidence = mysqlTable(
       table.collectedEventId
     ),
     index("ix_summary_evidence_account_event").on(
+      table.accountId,
+      table.collectedEventId
+    )
+  ]
+);
+
+export const periodSummaryEvidence = mysqlTable(
+  "period_summary_evidence",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    accountId: varchar("account_id", { length: 64 })
+      .notNull()
+      .references(() => accounts.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    summaryId: varchar("summary_id", { length: 64 })
+      .notNull()
+      .references(() => periodSummaries.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    collectedEventId: varchar("collected_event_id", { length: 64 })
+      .notNull()
+      .references(() => collectedEvents.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    claimKey: varchar("claim_key", { length: 128 }).notNull(),
+    claimType: mysqlEnum("claim_type", [
+      "FACT",
+      "INFERENCE",
+      "SUGGESTION",
+      "INFORMATION_MISSING"
+    ]).notNull(),
+    excerpt: text("excerpt"),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex("uq_period_summary_evidence_claim_event").on(
+      table.summaryId,
+      table.claimKey,
+      table.collectedEventId
+    ),
+    index("ix_period_summary_evidence_account_event").on(
       table.accountId,
       table.collectedEventId
     )
@@ -704,8 +803,10 @@ export const schema = {
   promptEntries,
   visibleResults,
   dailySummaries,
+  periodSummaries,
   summaryJobs,
   summaryEvidence,
+  periodSummaryEvidence,
   skillCandidates,
   auditLogs
 };

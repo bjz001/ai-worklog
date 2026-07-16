@@ -18,7 +18,9 @@ describe("migration manifest", () => {
       "0001_initial.sql",
       "0002_project_canonical_key.sql",
       "0003_summary_jobs.sql",
-      "0004_llm_settings.sql"
+      "0004_llm_settings.sql",
+      "0005_period_summaries.sql",
+      "0006_period_summary_evidence.sql"
     ]);
 
     for (const table of [
@@ -33,9 +35,11 @@ describe("migration manifest", () => {
       "prompt_entries",
       "visible_results",
       "daily_summaries",
+      "period_summaries",
       "summary_jobs",
       "llm_settings",
       "summary_evidence",
+      "period_summary_evidence",
       "skill_candidates",
       "audit_logs"
     ]) {
