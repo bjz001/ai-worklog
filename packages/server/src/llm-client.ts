@@ -8,7 +8,7 @@ import {
 } from "./llm-network-policy";
 import type { RuntimeLlmSettings } from "./llm-settings-service";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 export const MAX_LLM_REQUEST_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
