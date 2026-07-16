@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  PeriodSummaryRequestSchema,
+  PeriodSummaryResponseSchema,
+  PeriodSummaryViewSchema,
   SummaryGenerationRequestSchema,
   SummaryResponseSchema,
   SummaryViewSchema
@@ -63,5 +66,87 @@ describe("summary contracts", () => {
         data: { summary: null, apiKey: "secret" }
       }).success
     ).toBe(false);
+  });
+
+  it("accepts only canonical Monday and month-start period requests", () => {
+    expect(
+      PeriodSummaryRequestSchema.safeParse({
+        periodType: "WEEK",
+        periodStart: "2026-07-13"
+      }).success
+    ).toBe(true);
+    expect(
+      PeriodSummaryRequestSchema.safeParse({
+        periodType: "MONTH",
+        periodStart: "2026-07-01"
+      }).success
+    ).toBe(true);
+    expect(
+      PeriodSummaryRequestSchema.safeParse({
+        periodType: "WEEK",
+        periodStart: "2026-07-12"
+      }).success
+    ).toBe(false);
+    expect(
+      PeriodSummaryRequestSchema.safeParse({
+        periodType: "MONTH",
+        periodStart: "2026-07-02"
+      }).success
+    ).toBe(false);
+    expect(
+      PeriodSummaryRequestSchema.safeParse({
+        periodType: "MONTH",
+        periodStart: "2026-07-01",
+        apiKey: "must-not-cross-this-boundary"
+      }).success
+    ).toBe(false);
+  });
+
+  it("keeps period summaries high-level and evidence-backed", () => {
+    const parsed = PeriodSummaryViewSchema.safeParse({
+      id: "period-summary-1",
+      periodType: "MONTH",
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-31",
+      dataCompleteness: "complete",
+      hasContent: true,
+      inputTruncated: false,
+      overview: [statement],
+      majorAccomplishments: [statement],
+      projectProgress: [statement],
+      decisions: [],
+      blockers: [],
+      nextFocus: [statement],
+      completenessNote: "已基于本月 Prompt 与回答生成。",
+      evidence: [
+        {
+          id: "event-1",
+          excerpt: "提示词与回答证据",
+          projectName: "AI Worklog",
+          occurredAt: "2026-07-15T08:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it("returns period activity even before an LLM summary exists", () => {
+    expect(
+      PeriodSummaryResponseSchema.safeParse({
+        data: {
+          period: {
+            periodType: "WEEK",
+            periodStart: "2026-07-13",
+            periodEnd: "2026-07-19",
+            promptCount: 12,
+            projectCount: 3,
+            activeDayCount: 4
+          },
+          generationState: "missing",
+          summary: null
+        }
+      }).success
+    ).toBe(true);
   });
 });

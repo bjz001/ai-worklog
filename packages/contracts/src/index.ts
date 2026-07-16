@@ -330,6 +330,88 @@ export const SummaryGenerationResponseSchema = z
   })
   .strict();
 
+export const SummaryPeriodTypeSchema = z.enum(["WEEK", "MONTH"]);
+
+export const PeriodSummaryRequestSchema = z
+  .object({
+    periodType: SummaryPeriodTypeSchema,
+    periodStart: WorkDateSchema
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const date = new Date(`${value.periodStart}T00:00:00.000Z`);
+    if (value.periodType === "WEEK" && date.getUTCDay() !== 1) {
+      context.addIssue({
+        code: "custom",
+        message: "weekly summaries must start on Monday",
+        path: ["periodStart"]
+      });
+    }
+    if (value.periodType === "MONTH" && !value.periodStart.endsWith("-01")) {
+      context.addIssue({
+        code: "custom",
+        message: "monthly summaries must start on the first day",
+        path: ["periodStart"]
+      });
+    }
+  });
+
+export const PeriodSummaryActivityViewSchema = z
+  .object({
+    periodType: SummaryPeriodTypeSchema,
+    periodStart: WorkDateSchema,
+    periodEnd: WorkDateSchema,
+    promptCount: z.number().int().nonnegative(),
+    projectCount: z.number().int().nonnegative(),
+    activeDayCount: z.number().int().nonnegative()
+  })
+  .strict();
+
+export const PeriodSummaryViewSchema = z
+  .object({
+    id: z.string(),
+    periodType: SummaryPeriodTypeSchema,
+    periodStart: WorkDateSchema,
+    periodEnd: WorkDateSchema,
+    dataCompleteness: z.enum(["complete", "partial"]),
+    hasContent: z.boolean(),
+    inputTruncated: z.boolean(),
+    overview: z.array(SummaryStatementSchema),
+    majorAccomplishments: z.array(SummaryStatementSchema),
+    projectProgress: z.array(SummaryStatementSchema),
+    decisions: z.array(SummaryStatementSchema),
+    blockers: z.array(SummaryStatementSchema),
+    nextFocus: z.array(SummaryStatementSchema),
+    completenessNote: z.string(),
+    evidence: z.array(EvidenceViewSchema)
+  })
+  .strict();
+
+export const PeriodSummaryResponseSchema = z
+  .object({
+    data: z
+      .object({
+        period: PeriodSummaryActivityViewSchema,
+        generationState: z.enum(["missing", "ready"]),
+        summary: PeriodSummaryViewSchema.nullable()
+      })
+      .strict()
+  })
+  .strict();
+
+export const PeriodSummaryGenerationResponseSchema = z
+  .object({
+    data: z
+      .object({
+        period: PeriodSummaryActivityViewSchema,
+        generationState: z.literal("ready"),
+        summary: PeriodSummaryViewSchema,
+        generated: z.boolean()
+      })
+      .strict()
+  })
+  .strict();
+
 export const PromptViewSchema = z.object({
   id: z.string(),
   content: z.string(),
@@ -390,6 +472,16 @@ export type SummaryView = z.infer<typeof SummaryViewSchema>;
 export type SummaryResponse = z.infer<typeof SummaryResponseSchema>;
 export type SummaryGenerationResponse = z.infer<
   typeof SummaryGenerationResponseSchema
+>;
+export type SummaryPeriodType = z.infer<typeof SummaryPeriodTypeSchema>;
+export type PeriodSummaryRequest = z.infer<typeof PeriodSummaryRequestSchema>;
+export type PeriodSummaryActivityView = z.infer<
+  typeof PeriodSummaryActivityViewSchema
+>;
+export type PeriodSummaryView = z.infer<typeof PeriodSummaryViewSchema>;
+export type PeriodSummaryResponse = z.infer<typeof PeriodSummaryResponseSchema>;
+export type PeriodSummaryGenerationResponse = z.infer<
+  typeof PeriodSummaryGenerationResponseSchema
 >;
 export type PromptView = z.infer<typeof PromptViewSchema>;
 export type CalendarDayView = z.infer<typeof CalendarDayViewSchema>;
