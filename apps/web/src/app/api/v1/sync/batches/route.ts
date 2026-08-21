@@ -1,5 +1,6 @@
 import {
   authenticateDevice,
+  commitAgentSyncBatch,
   commitSyncBatch,
   syncPreAuthRateLimiter,
   syncRateLimiter
@@ -7,6 +8,7 @@ import {
 import { MAX_SYNC_BATCH_BODY_BYTES } from "@ai-worklog/contracts";
 import { validateIncomingBatch } from "@ai-worklog/sync";
 import { NextRequest, NextResponse } from "next/server";
+import { readBoundedRequestBytes } from "../../../../../lib/bounded-request-body";
 import { apiError, requestId, serverContext } from "@/lib/server-api";
 
 export const runtime = "nodejs";
@@ -32,25 +34,15 @@ async function readBoundedJsonBody(request: NextRequest): Promise<string> {
       "同步请求必须使用 application/json"
     );
   }
-  const declaredLength = Number(request.headers.get("content-length"));
-  if (
-    Number.isFinite(declaredLength) &&
-    declaredLength > MAX_SYNC_BATCH_BODY_BYTES
-  ) {
-    throw new RequestBoundaryError(
+  const bytes = await readBoundedRequestBytes(
+    request,
+    MAX_SYNC_BATCH_BODY_BYTES,
+    () => new RequestBoundaryError(
       "PAYLOAD_TOO_LARGE",
       413,
       "同步请求超过 2 MiB 限制"
-    );
-  }
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > MAX_SYNC_BATCH_BODY_BYTES) {
-    throw new RequestBoundaryError(
-      "PAYLOAD_TOO_LARGE",
-      413,
-      "同步请求超过 2 MiB 限制"
-    );
-  }
+    )
+  );
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
@@ -79,12 +71,19 @@ export async function POST(request: NextRequest) {
       idempotencyKey: request.headers.get("idempotency-key"),
       declaredPayloadHash: request.headers.get("x-payload-sha256")
     });
-    const result = await commitSyncBatch({
-      pool,
-      identity,
-      validated,
-      requestId: id
-    });
+    const result = validated.payload.protocolVersion === 2
+      ? await commitAgentSyncBatch({
+          pool,
+          identity,
+          validated: { ...validated, payload: validated.payload },
+          requestId: id
+        })
+      : await commitSyncBatch({
+          pool,
+          identity,
+          validated: { ...validated, payload: validated.payload },
+          requestId: id
+        });
     return NextResponse.json(result);
   } catch (error) {
     return apiError(error, id);

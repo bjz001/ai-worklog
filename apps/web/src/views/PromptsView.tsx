@@ -82,7 +82,7 @@ export function PromptsView() {
 
   return (
     <>
-      <PageHeader description="搜索跨设备的脱敏 Prompt，并追溯可见结果与来源" title="Prompt 库" />
+      <PageHeader description="旧 API 的用户/助手兼容投影；完整搜索请使用 Agent 轨迹" title="Prompt 兼容视图" />
       <form className="filter-bar" onSubmit={submitSearch}>
         <label className="filter-search" htmlFor="prompt-search">
           <Icon name="search" />
@@ -110,7 +110,7 @@ export function PromptsView() {
       {state === "error" && error ? <ErrorState error={error} onRetry={reload} /> : null}
       {state === "empty" ? (
         <EmptyState
-          description={query || date || source ? "当前筛选条件下没有结果，请调整关键词、日期或来源。" : "完成同步后，可在这里搜索所有已脱敏的 Prompt。"}
+          description={query || date || source ? "当前筛选条件下没有结果，请调整关键词、日期或来源。" : "完成同步后，这里仅展示旧 Prompt API 的兼容投影。"}
           icon="prompt"
           title={query || date || source ? "没有匹配的 Prompt" : "Prompt 库为空"}
         />

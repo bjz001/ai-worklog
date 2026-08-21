@@ -87,4 +87,40 @@ describe("validateIncomingBatch", () => {
       })
     ).toThrow(InvalidBatchError);
   });
+
+  it("accepts a protocol v2 batch without applying the v1 redaction contract", () => {
+    const payload = {
+      protocolVersion: 2,
+      batchId: "agent-batch-001",
+      createdAt: "2026-08-21T10:00:00.000+08:00",
+      source: {
+        type: "ZCODE",
+        instanceId: "zcode-macos",
+        parserVersion: "zcode-hook-v1"
+      },
+      records: [{
+        recordType: "RUN",
+        runId: "1".repeat(64),
+        sourceSessionId: "zcode-session-1",
+        startedAt: "2026-08-21T10:00:00.000+08:00",
+        sourceTimeZone: "Asia/Shanghai",
+        rawCaptureStatus: "CAPTURED",
+        normalizedCoverage: "FULL",
+        attachmentStatus: "PENDING",
+        metadata: { rawCanary: "sk-live-FAKE-CANARY" }
+      }]
+    } as const;
+    const body = JSON.stringify(payload);
+
+    const result = validateIncomingBatch({
+      body,
+      idempotencyKey: payload.batchId,
+      declaredPayloadHash: sha256Hex(body)
+    });
+
+    expect(result.payload.protocolVersion).toBe(2);
+    if (result.payload.protocolVersion === 2) {
+      expect(result.payload.records[0]).toEqual(payload.records[0]);
+    }
+  });
 });

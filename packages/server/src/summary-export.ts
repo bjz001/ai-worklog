@@ -80,6 +80,7 @@ export function renderDailySummaryMarkdown(summary: SummaryView): string {
     `# ${safeWorkDate(summary.workDate)} 日总结`,
     "",
     `- 总结状态：${summary.status === "complete" ? "完整" : "部分"}`,
+    `- 输入证据：${summary.inputTruncated ? "已截断" : "未截断"}`,
     `- 完整性说明：${markdownText(summary.completenessNote)}`,
     "",
     ...statementSection("工作亮点", summary.highlights),

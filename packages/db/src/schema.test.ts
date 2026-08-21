@@ -3,11 +3,17 @@ import { describe, expect, it } from "vitest";
 import {
   accounts,
   auditLogs,
+  agentCaptureCompleteness,
+  agentTextSegments,
+  blobChunks,
+  blobObjects,
   collectedEvents,
+  collectorBackfillCursors,
   dailySummaries,
   deviceTokens,
   devices,
   eventVersions,
+  eventBlobReferences,
   llmSettings,
   periodSummaries,
   periodSummaryEvidence,
@@ -42,7 +48,13 @@ describe("MySQL schema", () => {
         summaryEvidence,
         periodSummaryEvidence,
         skillCandidates,
-        auditLogs
+        auditLogs,
+        agentTextSegments,
+        blobObjects,
+        blobChunks,
+        eventBlobReferences,
+        agentCaptureCompleteness,
+        collectorBackfillCursors
       ].map(getTableName)
     ).toEqual([
       "accounts",
@@ -62,7 +74,13 @@ describe("MySQL schema", () => {
       "summary_evidence",
       "period_summary_evidence",
       "skill_candidates",
-      "audit_logs"
+      "audit_logs",
+      "agent_text_segments",
+      "blob_objects",
+      "blob_chunks",
+      "event_blob_references",
+      "agent_capture_completeness",
+      "collector_backfill_cursors"
     ]);
   });
 });

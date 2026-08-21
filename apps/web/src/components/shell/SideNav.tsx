@@ -9,7 +9,7 @@ const navigation: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/", label: "工作台", icon: "dashboard" },
   { href: "/projects", label: "项目", icon: "folder" },
   { href: "/calendar", label: "日历", icon: "calendar" },
-  { href: "/prompts", label: "Prompt 库", icon: "prompt" },
+  { href: "/runs", label: "Agent 轨迹", icon: "prompt" },
   { href: "/skills", label: "Skill 中心", icon: "skill" },
   { href: "/sync", label: "同步中心", icon: "sync" },
   { href: "/settings", label: "LLM 设置", icon: "settings" },
@@ -50,7 +50,7 @@ export function SideNav() {
       </nav>
       <div className="side-nav__privacy">
         <Icon name="shield" size={18} />
-        <span>仅同步脱敏内容</span>
+        <span>原始轨迹完整同步</span>
       </div>
     </aside>
   );

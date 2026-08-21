@@ -264,7 +264,7 @@ export function LlmSettingsView() {
 
         <Surface title="总结工作流" description="每日同步后的处理方式">
           <div className="surface__body settings-flow">
-            <div><span>1</span><p><strong>本地脱敏与同步</strong><small>Mac 与 Windows 只上传脱敏后的 Prompt 和可见结果。</small></p></div>
+            <div><span>1</span><p><strong>Agent 原始轨迹同步</strong><small>v2 上传来源实际暴露的未脱敏事件，并投影用户/助手证据。</small></p></div>
             <div><span>2</span><p><strong>LLM 识别工作进展</strong><small>模型只能基于当日证据生成亮点和项目进展。</small></p></div>
             <div><span>3</span><p><strong>证据校验后入库</strong><small>无效证据引用会导致任务保留并等待重试。</small></p></div>
           </div>

@@ -20,6 +20,8 @@ import { StatusChip } from "@/components/ui/StatusChip";
 import { useApiResource } from "@/hooks/use-api-resource";
 import { mutateApi } from "@/lib/api-client";
 import { formatDateTime, formatNumber } from "@/lib/presenters";
+import { SummaryGenerationError } from "./SummaryGenerationError";
+import { SummaryPromptEditor } from "./SummaryPromptEditor";
 import {
   canonicalPeriodStart,
   localWorkDate,
@@ -68,6 +70,7 @@ export function PeriodSummaryPanel({
   );
   const [generating, setGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<Error | null>(null);
+  const [promptDirty, setPromptDirty] = useState(false);
   const activity = data?.data.period;
   const summary = data?.data.summary ?? null;
   const periodName = periodNames[periodType];
@@ -180,8 +183,9 @@ export function PeriodSummaryPanel({
                   <div className="period-summary-actions">
                     <button
                       className="button button--primary"
-                      disabled={generating}
+                      disabled={generating || promptDirty}
                       onClick={() => void generate()}
+                      title={promptDirty ? "请先保存或取消 Prompt 修改" : undefined}
                       type="button"
                     >
                       <Icon name={generating ? "schedule" : "refresh"} />
@@ -204,6 +208,18 @@ export function PeriodSummaryPanel({
                 ) : null}
               </div>
 
+              <SummaryPromptEditor
+                disabled={generating}
+                onDirtyChange={setPromptDirty}
+                scope={periodType === "WEEK" ? "weekly" : "monthly"}
+              />
+
+              {promptDirty ? (
+                <p className="summary-prompt-save-hint" role="status">
+                  请先保存或取消 Prompt 修改，再让 LLM 生成总结。
+                </p>
+              ) : null}
+
               {activity.promptCount === 0 ? (
                 <div className="period-summary-empty" role="status">
                   <span className="state-panel__icon"><Icon name="calendar" size={28} /></span>
@@ -215,9 +231,7 @@ export function PeriodSummaryPanel({
               ) : null}
 
               {generationError ? (
-                <p className="form-feedback form-feedback--error" role="alert">
-                  <Icon name="error" />{generationError.message}
-                </p>
+                <SummaryGenerationError error={generationError} />
               ) : null}
 
               {summary ? (

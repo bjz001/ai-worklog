@@ -16,6 +16,8 @@ import { StatusChip } from "@/components/ui/StatusChip";
 import { useApiResource } from "@/hooks/use-api-resource";
 import { mutateApi } from "@/lib/api-client";
 import { formatDateTime, formatNumber } from "@/lib/presenters";
+import { SummaryGenerationError } from "./SummaryGenerationError";
+import { SummaryPromptEditor } from "./SummaryPromptEditor";
 
 const sections: Array<{
   key: keyof Pick<
@@ -50,6 +52,7 @@ export function CalendarSummaryDetail({
   );
   const [generating, setGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<Error | null>(null);
+  const [promptDirty, setPromptDirty] = useState(false);
   const summary = data?.data.summary ?? null;
 
   const generate = async () => {
@@ -107,10 +110,17 @@ export function CalendarSummaryDetail({
             <StatusChip icon={<Icon name="schedule" />} tone="neutral">尚无总结</StatusChip>
           )}
           {activity?.hasSyncError ? <p className="muted">当天存在同步异常，结论可能缺少部分设备数据。</p> : null}
+          {summary?.inputTruncated ? <p className="muted">模型上下文未容纳全部原始证据；本次输入已明确标记为截断。</p> : null}
           {summary ? <p className="muted">{summary.completenessNote}</p> : null}
           {canGenerate ? (
             <div className="summary-detail-actions">
-              <button className="button button--primary" disabled={generating} onClick={() => void generate()} type="button">
+              <button
+                className="button button--primary"
+                disabled={generating || promptDirty}
+                onClick={() => void generate()}
+                title={promptDirty ? "请先保存或取消 Prompt 修改" : undefined}
+                type="button"
+              >
                 <Icon name={generating ? "schedule" : "refresh"} />
                 {generating
                   ? "LLM 正在总结…"
@@ -129,13 +139,21 @@ export function CalendarSummaryDetail({
               ) : null}
             </div>
           ) : null}
+          <SummaryPromptEditor
+            disabled={generating}
+            onDirtyChange={setPromptDirty}
+            scope="daily"
+          />
+          {promptDirty ? (
+            <p className="summary-prompt-save-hint" role="status">
+              请先保存或取消 Prompt 修改，再让 LLM 生成总结。
+            </p>
+          ) : null}
           {!summary && (activity?.promptCount ?? 0) === 0 ? (
             <p className="muted">当天没有 Prompt，无需生成工作总结。</p>
           ) : null}
           {generationError ? (
-            <p className="form-feedback form-feedback--error" role="alert">
-              <Icon name="error" />{generationError.message}
-            </p>
+            <SummaryGenerationError error={generationError} />
           ) : null}
           <span aria-live="polite" className="sr-only">
             {generating ? "LLM 正在生成工作总结" : ""}
@@ -173,10 +191,10 @@ export function CalendarSummaryDetail({
 
       <Link
         className="button button--secondary"
-        href={`/prompts?date=${encodeURIComponent(date)}`}
+        href={`/runs?from=${encodeURIComponent(date)}&to=${encodeURIComponent(date)}`}
         onClick={closeDrawer}
       >
-        查看当天 Prompt<Icon name="chevron-right" />
+        查看当天 Agent 轨迹<Icon name="chevron-right" />
       </Link>
     </div>
   );

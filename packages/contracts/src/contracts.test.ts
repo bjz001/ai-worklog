@@ -193,13 +193,42 @@ describe("LLM settings contracts", () => {
         provider: "DEEPSEEK",
         baseUrl: "https://api.deepseek.com",
         model: "deepseek-v4-flash",
-        apiKey: "sk-test-only-value"
+        apiKey: "sk-test-only-value",
+        summaryPrompts: {
+          daily: "突出当天已经完成的结果。",
+          weekly: null,
+          monthly: "归纳本月最重要的业务产出。"
+        }
       }).success
     ).toBe(true);
     expect(
       LlmSettingsUpdateSchema.safeParse({
         provider: "DEEPSEEK",
         encryptedApiKey: "must-never-cross-the-api-boundary"
+      }).success
+    ).toBe(false);
+    expect(
+      LlmSettingsUpdateSchema.safeParse({
+        provider: "DEEPSEEK",
+        baseUrl: "https://api.deepseek.com",
+        model: "deepseek-v4-flash",
+        summaryPrompts: {
+          daily: "控制字符\u0000",
+          weekly: null,
+          monthly: null
+        }
+      }).success
+    ).toBe(false);
+    expect(
+      LlmSettingsUpdateSchema.safeParse({
+        provider: "DEEPSEEK",
+        baseUrl: "https://api.deepseek.com",
+        model: "deepseek-v4-flash",
+        summaryPrompts: {
+          daily: "中".repeat(1_400),
+          weekly: null,
+          monthly: null
+        }
       }).success
     ).toBe(false);
   });
@@ -212,7 +241,27 @@ describe("LLM settings contracts", () => {
           baseUrl: "https://api.deepseek.com",
           model: "deepseek-v4-flash",
           hasApiKey: true,
-          updatedAt: "2026-07-15T08:00:00.000Z"
+          updatedAt: "2026-07-15T08:00:00.000Z",
+          summaryPrompts: {
+            daily: {
+              instructions: "日总结要求",
+              defaultInstructions: "默认日总结要求",
+              effectivePrompt: "固定安全约束\n日总结要求\n固定 JSON 约束",
+              isCustomized: true
+            },
+            weekly: {
+              instructions: "周总结要求",
+              defaultInstructions: "默认周总结要求",
+              effectivePrompt: "固定安全约束\n周总结要求\n固定 JSON 约束",
+              isCustomized: false
+            },
+            monthly: {
+              instructions: "月总结要求",
+              defaultInstructions: "默认月总结要求",
+              effectivePrompt: "固定安全约束\n月总结要求\n固定 JSON 约束",
+              isCustomized: false
+            }
+          }
         }
       }).success
     ).toBe(true);
@@ -224,6 +273,26 @@ describe("LLM settings contracts", () => {
           model: "deepseek-v4-flash",
           hasApiKey: true,
           updatedAt: null,
+          summaryPrompts: {
+            daily: {
+              instructions: "日总结要求",
+              defaultInstructions: "默认日总结要求",
+              effectivePrompt: "完整 Prompt",
+              isCustomized: false
+            },
+            weekly: {
+              instructions: "周总结要求",
+              defaultInstructions: "默认周总结要求",
+              effectivePrompt: "完整 Prompt",
+              isCustomized: false
+            },
+            monthly: {
+              instructions: "月总结要求",
+              defaultInstructions: "默认月总结要求",
+              effectivePrompt: "完整 Prompt",
+              isCustomized: false
+            }
+          },
           apiKey: "secret"
         }
       }).success

@@ -1,7 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
 import {
-  SyncBatchRequestSchema,
-  type SyncBatchRequest
+  SyncRequestSchema,
+  type AgentSyncBatchRequest,
+  type SyncBatchRequest,
+  type SyncRequest
 } from "@ai-worklog/contracts";
 import { sha256Hex } from "@ai-worklog/core";
 
@@ -32,8 +34,16 @@ export interface IncomingBatchInput {
 }
 
 export interface ValidatedIncomingBatch {
-  payload: SyncBatchRequest;
+  payload: SyncRequest;
   payloadHash: string;
+}
+
+export interface ValidatedIncomingV1Batch extends ValidatedIncomingBatch {
+  payload: SyncBatchRequest;
+}
+
+export interface ValidatedIncomingV2Batch extends ValidatedIncomingBatch {
+  payload: AgentSyncBatchRequest;
 }
 
 function equalHexDigest(left: string, right: string): boolean {
@@ -62,7 +72,7 @@ export function validateIncomingBatch(
     throw new InvalidBatchError("请求正文不是合法 JSON");
   }
 
-  const parsed = SyncBatchRequestSchema.safeParse(decoded);
+  const parsed = SyncRequestSchema.safeParse(decoded);
   if (!parsed.success) {
     throw new InvalidBatchError();
   }

@@ -1,14 +1,19 @@
-import { Suspense } from "react";
+import { redirect } from "next/navigation";
 
-import { LoadingState, PageHeader } from "@/components/ui/PageElements";
-import { PromptsView } from "@/views/PromptsView";
+export const metadata = { title: "Agent 轨迹" };
 
-export const metadata = { title: "Prompt 库" };
+type SearchParams = Record<string, string | string[] | undefined>;
 
-export default function PromptsPage() {
-  return (
-    <Suspense fallback={<><PageHeader description="搜索跨设备的脱敏 Prompt" title="Prompt 库" /><LoadingState rows={7} /></>}>
-      <PromptsView />
-    </Suspense>
-  );
+export default async function PromptsPage({
+  searchParams
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  const values = await searchParams;
+  const next = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (Array.isArray(value)) value.forEach((item) => next.append(key, item));
+    else if (value !== undefined) next.set(key, value);
+  }
+  redirect(next.size > 0 ? `/runs?${next.toString()}` : "/runs");
 }

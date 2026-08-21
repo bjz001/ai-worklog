@@ -1,11 +1,14 @@
 import type {
   LlmProvider,
   LlmSettingsUpdate,
-  LlmSettingsView
+  LlmSettingsView,
+  SummaryPromptOverrides
 } from "@ai-worklog/contracts";
+import { sha256Hex } from "@ai-worklog/core";
 import type { Pool, PoolConnection, RowDataPacket } from "mysql2/promise";
 import { decryptApiKey, encryptApiKey } from "./llm-crypto";
 import { isUnsafeLlmHostname } from "./llm-network-policy";
+import { resolvedSummaryPrompts } from "./summary-prompts";
 
 export const DEFAULT_LLM_SETTINGS = {
   provider: "DEEPSEEK" as const,
@@ -33,6 +36,9 @@ interface LlmSettingsRow extends RowDataPacket {
   base_url: string;
   model: string;
   encrypted_api_key: string;
+  daily_summary_prompt: string | null;
+  weekly_summary_prompt: string | null;
+  monthly_summary_prompt: string | null;
   updated_at: Date;
 }
 
@@ -104,7 +110,9 @@ async function settingsRow(
   accountId: string
 ): Promise<LlmSettingsRow | null> {
   const [rows] = await pool.execute<LlmSettingsRow[]>(
-    `SELECT provider, base_url, model, encrypted_api_key, updated_at
+    `SELECT provider, base_url, model, encrypted_api_key,
+            daily_summary_prompt, weekly_summary_prompt,
+            monthly_summary_prompt, updated_at
        FROM llm_settings
       WHERE account_id = ?
       LIMIT 1`,
@@ -118,7 +126,8 @@ function safeView(row: LlmSettingsRow | null): LlmSettingsView {
     return {
       ...DEFAULT_LLM_SETTINGS,
       hasApiKey: false,
-      updatedAt: null
+      updatedAt: null,
+      summaryPrompts: resolvedSummaryPrompts({})
     };
   }
   return {
@@ -126,7 +135,38 @@ function safeView(row: LlmSettingsRow | null): LlmSettingsView {
     baseUrl: row.base_url,
     model: row.model,
     hasApiKey: row.encrypted_api_key.length > 0,
-    updatedAt: row.updated_at.toISOString()
+    updatedAt: row.updated_at.toISOString(),
+    summaryPrompts: resolvedSummaryPrompts({
+      daily: row.daily_summary_prompt,
+      weekly: row.weekly_summary_prompt,
+      monthly: row.monthly_summary_prompt
+    })
+  };
+}
+
+function promptOverrides(
+  input: SummaryPromptOverrides | undefined,
+  existing: LlmSettingsRow | null
+): SummaryPromptOverrides {
+  if (input) return input;
+  return {
+    daily: existing?.daily_summary_prompt ?? null,
+    weekly: existing?.weekly_summary_prompt ?? null,
+    monthly: existing?.monthly_summary_prompt ?? null
+  };
+}
+
+function promptAuditMetadata(input: SummaryPromptOverrides | undefined) {
+  if (!input) return {};
+  return {
+    summaryPromptChanges: Object.fromEntries(
+      Object.entries(input).map(([scope, value]) => [
+        scope,
+        value === null
+          ? { mode: "default" }
+          : { mode: "custom", sha256: sha256Hex(value) }
+      ])
+    )
   };
 }
 
@@ -164,23 +204,31 @@ export async function saveLlmSettings(options: {
           : "首次配置时需要填写 API Key"
       );
     }
+    const prompts = promptOverrides(options.input.summaryPrompts, existing);
 
     await executor.execute(
       `INSERT INTO llm_settings
-         (account_id, provider, base_url, model, encrypted_api_key)
-       VALUES (?, ?, ?, ?, ?)
+         (account_id, provider, base_url, model, encrypted_api_key,
+          daily_summary_prompt, weekly_summary_prompt, monthly_summary_prompt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          provider = VALUES(provider),
          base_url = VALUES(base_url),
          model = VALUES(model),
          encrypted_api_key = VALUES(encrypted_api_key),
+         daily_summary_prompt = VALUES(daily_summary_prompt),
+         weekly_summary_prompt = VALUES(weekly_summary_prompt),
+         monthly_summary_prompt = VALUES(monthly_summary_prompt),
          updated_at = UTC_TIMESTAMP(6)`,
       [
         options.accountId,
         options.input.provider,
         baseUrl,
         options.input.model,
-        encryptedApiKey
+        encryptedApiKey,
+        prompts.daily,
+        prompts.weekly,
+        prompts.monthly
       ]
     );
     await executor.execute(
@@ -194,7 +242,8 @@ export async function saveLlmSettings(options: {
           provider: options.input.provider,
           baseUrl,
           model: options.input.model,
-          apiKeyChanged: Boolean(options.input.apiKey)
+          apiKeyChanged: Boolean(options.input.apiKey),
+          ...promptAuditMetadata(options.input.summaryPrompts)
         })
       ]
     );
@@ -244,6 +293,11 @@ export interface RuntimeLlmSettings {
   baseUrl: string;
   model: string;
   apiKey: string;
+  summaryPrompts: {
+    daily: string;
+    weekly: string;
+    monthly: string;
+  };
 }
 
 export async function getRuntimeLlmSettings(options: {
@@ -259,6 +313,11 @@ export async function getRuntimeLlmSettings(options: {
       "请先配置并验证 LLM"
     );
   }
+  const prompts = resolvedSummaryPrompts({
+    daily: row.daily_summary_prompt,
+    weekly: row.weekly_summary_prompt,
+    monthly: row.monthly_summary_prompt
+  });
   return {
     provider: row.provider,
     baseUrl: normalizeLlmBaseUrl(row.provider, row.base_url),
@@ -267,6 +326,11 @@ export async function getRuntimeLlmSettings(options: {
       row.encrypted_api_key,
       options.masterKey,
       options.accountId
-    )
+    ),
+    summaryPrompts: {
+      daily: prompts.daily.instructions,
+      weekly: prompts.weekly.instructions,
+      monthly: prompts.monthly.instructions
+    }
   };
 }

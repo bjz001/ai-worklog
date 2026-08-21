@@ -11,11 +11,16 @@ export type JsonRecord = Record<string, unknown>;
 export interface JsonlEntry {
   record: JsonRecord | null;
   lineNumber: number;
+  rawLine: string;
 }
 
 export async function* readJsonlRecords(
   filePath: string,
-  sourceLabel: string
+  sourceLabel: string,
+  limits: {
+    maxFileBytes?: number | null;
+    maxLineBytes?: number | null;
+  } = {}
 ): AsyncGenerator<JsonlEntry> {
   if (extname(filePath).toLowerCase() !== ".jsonl") {
     throw new Error(`${sourceLabel} source must be a .jsonl file`);
@@ -27,7 +32,10 @@ export async function* readJsonlRecords(
   if (!sourceStat.isFile()) {
     throw new Error(`${sourceLabel} source must be a regular file`);
   }
-  if (sourceStat.size > MAX_FILE_BYTES) {
+  const maxFileBytes = limits.maxFileBytes === undefined
+    ? MAX_FILE_BYTES
+    : limits.maxFileBytes;
+  if (maxFileBytes !== null && sourceStat.size > maxFileBytes) {
     throw new Error(`${sourceLabel} source exceeds the 256 MiB safety limit`);
   }
 
@@ -39,7 +47,13 @@ export async function* readJsonlRecords(
     for await (const line of lines) {
       lineNumber += 1;
       if (line.trim().length === 0) continue;
-      if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) {
+      const maxLineBytes = limits.maxLineBytes === undefined
+        ? MAX_LINE_BYTES
+        : limits.maxLineBytes;
+      if (
+        maxLineBytes !== null &&
+        Buffer.byteLength(line, "utf8") > maxLineBytes
+      ) {
         throw new Error(`${sourceLabel} JSONL line exceeds the safety limit`);
       }
       let decoded: unknown;
@@ -53,7 +67,8 @@ export async function* readJsonlRecords(
           decoded !== null && typeof decoded === "object" && !Array.isArray(decoded)
             ? decoded as JsonRecord
             : null,
-        lineNumber
+        lineNumber,
+        rawLine: line
       };
     }
   } finally {

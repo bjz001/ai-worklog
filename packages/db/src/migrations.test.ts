@@ -20,7 +20,9 @@ describe("migration manifest", () => {
       "0003_summary_jobs.sql",
       "0004_llm_settings.sql",
       "0005_period_summaries.sql",
-      "0006_period_summary_evidence.sql"
+      "0006_period_summary_evidence.sql",
+      "0007_llm_summary_prompts.sql",
+      "0008_agent_trajectories.sql"
     ]);
 
     for (const table of [
@@ -41,7 +43,13 @@ describe("migration manifest", () => {
       "summary_evidence",
       "period_summary_evidence",
       "skill_candidates",
-      "audit_logs"
+      "audit_logs",
+      "agent_text_segments",
+      "blob_objects",
+      "blob_chunks",
+      "event_blob_references",
+      "agent_capture_completeness",
+      "collector_backfill_cursors"
     ]) {
       expect(sql).toContain(`CREATE TABLE \`${table}\``);
     }
@@ -60,6 +68,13 @@ describe("migration manifest", () => {
       "UNIQUE KEY `uq_sessions_source_identity` (`account_id`, `source_type`, `source_instance_id`, `source_session_id`)"
     );
     expect(sql).toContain("uq_projects_account_canonical_key");
+    expect(sql).toContain("MODIFY COLUMN `source_type` VARCHAR(32) NOT NULL");
+    expect(sql).toContain("MODIFY COLUMN `source_session_key` CHAR(64) NOT NULL");
+    expect(sql).toContain("MODIFY COLUMN `kind` VARCHAR(64) NOT NULL");
+    expect(sql).toContain("FULLTEXT KEY `ft_agent_text_segments_content`");
+    expect(sql).toContain("`group_segment_count` BIGINT UNSIGNED NOT NULL");
+    expect(sql).toContain("uq_agent_text_segments_event_group_ordinal");
+    expect(sql).toContain("UNIQUE KEY `uq_blob_objects_account_sha256`");
   });
 
   it("plans no work when an unchanged migration was already applied", async () => {

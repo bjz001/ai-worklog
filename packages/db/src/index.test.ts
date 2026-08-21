@@ -21,8 +21,14 @@ describe("@ai-worklog/db public API", () => {
     expect(runMigrations).toBeTypeOf("function");
     expect(bootstrapDatabase).toBeTypeOf("function");
     expect(runDemoSeed).toBeTypeOf("function");
-    expect(Object.keys(schema)).toHaveLength(18);
+    expect(Object.keys(schema)).toHaveLength(24);
     expect(schema.periodSummaries).toBeDefined();
     expect(schema.periodSummaryEvidence).toBeDefined();
+    expect(schema.agentTextSegments).toBeDefined();
+    expect(schema.blobObjects).toBeDefined();
+    expect(schema.blobChunks).toBeDefined();
+    expect(schema.eventBlobReferences).toBeDefined();
+    expect(schema.agentCaptureCompleteness).toBeDefined();
+    expect(schema.collectorBackfillCursors).toBeDefined();
   });
 });

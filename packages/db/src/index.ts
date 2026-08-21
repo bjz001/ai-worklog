@@ -35,12 +35,18 @@ export {
 export { runDemoSeed, type DemoSeedResult } from "./seeding";
 export {
   accounts,
+  agentCaptureCompleteness,
+  agentTextSegments,
   auditLogs,
+  blobChunks,
+  blobObjects,
   collectedEvents,
+  collectorBackfillCursors,
   dailySummaries,
   deviceTokens,
   devices,
   eventVersions,
+  eventBlobReferences,
   llmSettings,
   projects,
   promptEntries,

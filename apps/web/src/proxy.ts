@@ -31,7 +31,7 @@ function unauthorized(request: NextRequest, unavailable = false): NextResponse {
   return response;
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const localDevelopment =
     process.env.NODE_ENV === "development" &&
     ["127.0.0.1", "localhost", "::1"].includes(request.nextUrl.hostname);
@@ -56,6 +56,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/v1/sync/batches).*)"
+    "/((?!_next/static|_next/image|favicon.ico|api/v1/sync(?:/|$)).*)"
   ]
 };

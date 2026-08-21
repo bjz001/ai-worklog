@@ -9,7 +9,7 @@ import {
   normalizeGitRemote,
   sha256Hex
 } from "@ai-worklog/core";
-import type { ValidatedIncomingBatch } from "@ai-worklog/sync";
+import type { ValidatedIncomingV1Batch } from "@ai-worklog/sync";
 import type {
   Pool,
   PoolConnection,
@@ -1088,8 +1088,8 @@ async function ensureSession(options: {
   await options.connection.execute(
     `INSERT INTO sessions
        (id, account_id, device_id, project_id, source_type, source_instance_id,
-        source_session_id, parser_version, started_at, ended_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_session_id, source_session_key, parser_version, started_at, ended_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        parser_version = VALUES(parser_version),
        project_id = COALESCE(project_id, VALUES(project_id)),
@@ -1104,6 +1104,7 @@ async function ensureSession(options: {
       options.sourceType,
       options.sourceInstanceId,
       options.event.sourceSessionId,
+      sha256Hex(options.event.sourceSessionId),
       options.parserVersion,
       occurredAt,
       occurredAt
@@ -1346,7 +1347,7 @@ export async function backfillVisibleResultPromptLinks(options: {
 export interface CommitSyncBatchOptions {
   pool: Pool;
   identity: DeviceIdentity;
-  validated: ValidatedIncomingBatch;
+  validated: ValidatedIncomingV1Batch;
   requestId: string;
 }
 

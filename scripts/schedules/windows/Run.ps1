@@ -11,12 +11,21 @@ $ErrorActionPreference = "Stop"
 $ConfigKeys = @(
     "AI_WORKLOG_ACCOUNT_ID",
     "AI_WORKLOG_DEVICE_ID",
+    "AI_WORKLOG_PROTOCOL_VERSION",
     "CODEX_SOURCE_INSTANCE_ID",
     "CODEX_SOURCE_PATH",
     "CLAUDE_CODE_SOURCE_INSTANCE_ID",
     "CLAUDE_CODE_SOURCE_PATH",
+    "ZCODE_SOURCE_INSTANCE_ID",
+    "ZCODE_SOURCE_PATH",
+    "ZCODE_HOOK_SPOOL",
+    "ZCODE_CONFIG_PATH",
+    "DSH_SOURCE_INSTANCE_ID",
+    "DSH_SOURCE_PATH",
+    "DSH_HOME",
     "AI_WORKLOG_PATH_HMAC_KEY",
     "COLLECTOR_DB_PATH",
+    "COLLECTOR_BLOB_ROOT",
     "AI_WORKLOG_SYNC_URL",
     "AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP",
     "AI_WORKLOG_DEVICE_TOKEN",
@@ -178,10 +187,6 @@ function Assert-RequiredConfig {
     $requiredKeys = @(
         "AI_WORKLOG_ACCOUNT_ID",
         "AI_WORKLOG_DEVICE_ID",
-        "CODEX_SOURCE_INSTANCE_ID",
-        "CODEX_SOURCE_PATH",
-        "CLAUDE_CODE_SOURCE_INSTANCE_ID",
-        "CLAUDE_CODE_SOURCE_PATH",
         "AI_WORKLOG_SYNC_URL",
         "AI_WORKLOG_DEVICE_TOKEN"
     )
@@ -191,27 +196,49 @@ function Assert-RequiredConfig {
             throw "Missing required configuration"
         }
     }
+    $protocolVersion = $env:AI_WORKLOG_PROTOCOL_VERSION
+    if ([string]::IsNullOrWhiteSpace($protocolVersion)) {
+        $protocolVersion = "2"
+        [Environment]::SetEnvironmentVariable(
+            "AI_WORKLOG_PROTOCOL_VERSION", $protocolVersion, "Process"
+        )
+    }
+    if (@("1", "2") -notcontains $protocolVersion) {
+        throw "Invalid collector protocol version"
+    }
     $absolutePathPattern = '^(?:[A-Za-z]:[\\/]|\\\\)'
-    $codexPathIsAbsolute = $env:CODEX_SOURCE_PATH -match $absolutePathPattern
-    $claudeCodePathIsAbsolute = $env:CLAUDE_CODE_SOURCE_PATH -match $absolutePathPattern
-    if (-not $codexPathIsAbsolute -or -not $claudeCodePathIsAbsolute) {
-        throw "Source paths must be absolute"
+    $pathKeys = @(
+        "CODEX_SOURCE_PATH", "CLAUDE_CODE_SOURCE_PATH", "ZCODE_SOURCE_PATH",
+        "ZCODE_HOOK_SPOOL", "ZCODE_CONFIG_PATH", "DSH_SOURCE_PATH", "DSH_HOME",
+        "COLLECTOR_DB_PATH", "COLLECTOR_BLOB_ROOT"
+    )
+    foreach ($pathKey in $pathKeys) {
+        $pathValue = [Environment]::GetEnvironmentVariable($pathKey, "Process")
+        if (-not [string]::IsNullOrWhiteSpace($pathValue) -and
+            $pathValue -notmatch $absolutePathPattern) {
+            throw "Collector paths must be absolute"
+        }
     }
-    $databasePathConfigured = -not [string]::IsNullOrWhiteSpace($env:COLLECTOR_DB_PATH)
-    $databasePathIsAbsolute = $env:COLLECTOR_DB_PATH -match $absolutePathPattern
-    if ($databasePathConfigured -and -not $databasePathIsAbsolute) {
-        throw "Collector database path must be absolute"
-    }
-    if (-not (Test-Path -LiteralPath $env:CODEX_SOURCE_PATH)) {
-        throw "Missing source path"
-    }
-    if (-not (Test-Path -LiteralPath $env:CLAUDE_CODE_SOURCE_PATH)) {
-        throw "Missing source path"
-    }
-    $sameSourceInstance = $env:CODEX_SOURCE_INSTANCE_ID -eq $env:CLAUDE_CODE_SOURCE_INSTANCE_ID
-    $sameSourcePath = $env:CODEX_SOURCE_PATH -ieq $env:CLAUDE_CODE_SOURCE_PATH
-    if ($sameSourceInstance -or $sameSourcePath) {
-        throw "Source identities and paths must be distinct"
+    if ($protocolVersion -eq "1") {
+        foreach ($key in @(
+            "CODEX_SOURCE_INSTANCE_ID", "CODEX_SOURCE_PATH",
+            "CLAUDE_CODE_SOURCE_INSTANCE_ID", "CLAUDE_CODE_SOURCE_PATH"
+        )) {
+            if ([string]::IsNullOrWhiteSpace(
+                [Environment]::GetEnvironmentVariable($key, "Process")
+            )) {
+                throw "Missing legacy source configuration"
+            }
+        }
+        if (-not (Test-Path -LiteralPath $env:CODEX_SOURCE_PATH) -or
+            -not (Test-Path -LiteralPath $env:CLAUDE_CODE_SOURCE_PATH)) {
+            throw "Missing legacy source path"
+        }
+        $sameSourceInstance = $env:CODEX_SOURCE_INSTANCE_ID -eq $env:CLAUDE_CODE_SOURCE_INSTANCE_ID
+        $sameSourcePath = $env:CODEX_SOURCE_PATH -ieq $env:CLAUDE_CODE_SOURCE_PATH
+        if ($sameSourceInstance -or $sameSourcePath) {
+            throw "Legacy source identities and paths must be distinct"
+        }
     }
     $syncUri = [Uri]::new($env:AI_WORKLOG_SYNC_URL, [UriKind]::Absolute)
     $insecureLanSetting = $env:AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP
@@ -251,7 +278,7 @@ function Invoke-CollectorPhase {
         [Parameter(Mandatory = $true)][string]$TsxCli,
         [Parameter(Mandatory = $true)][string]$CollectorCli,
         [Parameter(Mandatory = $true)][ValidateSet("prepare", "sync")][string]$Command,
-        [Parameter(Mandatory = $true)][ValidateSet("prepare-codex", "prepare-claude-code", "sync")][string]$LogPhase,
+        [Parameter(Mandatory = $true)][ValidateSet("prepare-agents", "prepare-codex", "prepare-claude-code", "sync")][string]$LogPhase,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SourceType
     )
 
@@ -308,10 +335,14 @@ function Invoke-ScheduledCollector {
 
         Write-SafeEvent -Phase "schedule" -Status "started"
         $scheduleFailed = $false
-        if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-codex" -SourceType "CODEX")) {
-            $scheduleFailed = $true
-        }
-        if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-claude-code" -SourceType "CLAUDE_CODE")) {
+        if ($env:AI_WORKLOG_PROTOCOL_VERSION -eq "1") {
+            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-codex" -SourceType "CODEX")) {
+                $scheduleFailed = $true
+            }
+            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-claude-code" -SourceType "CLAUDE_CODE")) {
+                $scheduleFailed = $true
+            }
+        } elseif (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-agents" -SourceType "")) {
             $scheduleFailed = $true
         }
         if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "sync" -LogPhase "sync" -SourceType "")) {

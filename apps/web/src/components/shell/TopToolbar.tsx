@@ -13,18 +13,18 @@ export function TopToolbar() {
   const handleSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const value = query.trim();
-    router.push(value ? `/prompts?q=${encodeURIComponent(value)}` : "/prompts");
+    router.push(value ? `/runs?q=${encodeURIComponent(value)}` : "/runs");
   };
 
   return (
     <header className="top-toolbar">
       <form className="global-search" onSubmit={handleSearch} role="search">
         <Icon name="search" />
-        <label className="sr-only" htmlFor="global-search">搜索所有 Prompt</label>
+        <label className="sr-only" htmlFor="global-search">搜索所有 Agent 轨迹</label>
         <input
           id="global-search"
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索 Prompt、项目或标签"
+          placeholder="搜索 Agent 轨迹、项目或文件路径"
           type="search"
           value={query}
         />
@@ -32,9 +32,9 @@ export function TopToolbar() {
       <div className="top-toolbar__actions">
         <span className="privacy-indicator">
           <Icon name="shield" size={18} />
-          <span>脱敏模式</span>
+          <span>原始轨迹</span>
         </span>
-        <Link className="button button--primary" href="/sync#run-now">
+        <Link aria-label="立即同步" className="button button--primary" href="/sync#run-now">
           <Icon name="sync" />
           <span>立即同步</span>
         </Link>

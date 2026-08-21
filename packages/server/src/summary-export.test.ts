@@ -12,6 +12,7 @@ const dailySummary: SummaryView = {
   id: "summary-1",
   workDate: "2026-07-15",
   status: "complete",
+  inputTruncated: false,
   highlights: [
     {
       text: "交付了 # 周报 <script>alert(1)</script> [查看](javascript:alert(1))",
@@ -58,6 +59,7 @@ describe("summary Markdown export", () => {
     expect(markdown).toContain("# 2026-07-15 日总结");
     expect(markdown).toContain("## 工作亮点");
     expect(markdown).toContain("## 证据");
+    expect(markdown).toContain("- 输入证据：未截断");
     expect(markdown).toContain("证据：event-1");
     expect(markdown).toContain("\\<script\\>alert\\(1\\)\\</script\\>");
     expect(markdown).toContain("\\[查看\\]\\(javascript:alert\\(1\\)\\)");

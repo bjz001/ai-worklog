@@ -54,6 +54,8 @@ describe("macOS collector configuration", () => {
 
     expect(result).toContain("AI_WORKLOG_ACCOUNT_ID=account_demo\n");
     expect(result).toContain("AI_WORKLOG_DEVICE_ID=device_macos_demo\n");
+    expect(result).toContain("AI_WORKLOG_PROTOCOL_VERSION=2\n");
+    expect(result).toContain("COLLECTOR_BLOB_ROOT=/Users/tester/.ai-worklog/blobs\n");
     expect(result).toContain("AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=false\n");
     expect(result).toContain("AI_WORKLOG_PATH_HMAC_KEY=generated-path-key\n");
   });

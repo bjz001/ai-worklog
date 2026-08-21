@@ -8,6 +8,7 @@ import {
   summaryFingerprint,
   summaryLockName
 } from "./insight-service";
+import { summaryPromptFingerprint } from "./summary-prompts";
 
 describe("summaryFingerprint", () => {
   it("changes when device coverage changes even if prompt evidence does not", () => {
@@ -43,6 +44,33 @@ describe("summaryFingerprint", () => {
       summaryFingerprint({ ...base, generatorFingerprint: "deepseek:model-a" })
     ).not.toBe(
       summaryFingerprint({ ...base, generatorFingerprint: "deepseek:model-b" })
+    );
+  });
+
+  it("changes when the effective daily summary prompt changes", () => {
+    const base = {
+      evidenceFingerprint: "a".repeat(64),
+      expectedDeviceIds: ["mac"],
+      arrivedDeviceIds: ["mac"]
+    };
+    const generator = (instructions: string) => [
+      "llm-summary-v1",
+      "DEEPSEEK",
+      "https://api.deepseek.com",
+      "deepseek-v4-flash",
+      summaryPromptFingerprint("DAILY", instructions)
+    ].join(":");
+
+    expect(
+      summaryFingerprint({
+        ...base,
+        generatorFingerprint: generator("突出已完成成果。")
+      })
+    ).not.toBe(
+      summaryFingerprint({
+        ...base,
+        generatorFingerprint: generator("突出阻塞与风险。")
+      })
     );
   });
 

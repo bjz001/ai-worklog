@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAgentEventId,
+  buildAgentTextSegmentId,
+  buildAgentBlobReferenceId,
+  buildAgentRunId,
   buildEventId,
   normalizeGitRemote,
   repositoryRootName,
@@ -107,5 +111,71 @@ describe("buildEventId", () => {
     expect(buildEventId({ ...base, sourceMessageId: "message-a" })).not.toBe(
       buildEventId({ ...base, sourceMessageId: "message-b" })
     );
+  });
+});
+
+describe("agent trajectory identities", () => {
+  const identity = {
+    accountId: "account_demo",
+    deviceId: "device_macos",
+    sourceType: "CODEX",
+    sourceInstanceId: "codex-macos",
+    sourceSessionId: "session-1"
+  } as const;
+
+  it("builds a stable run identity independent of parser and content", () => {
+    expect(buildAgentRunId(identity)).toBe(buildAgentRunId(identity));
+    expect(buildAgentRunId(identity)).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it("preserves the legacy user/assistant event identity", () => {
+    const legacy = buildEventId({
+      ...identity,
+      sourceMessageId: "message-2",
+      messageIndex: 2
+    });
+    const agent = buildAgentEventId({
+      ...identity,
+      sourceEventId: "message-2",
+      sequence: 2
+    });
+
+    expect(agent).toBe(legacy);
+  });
+
+  it("preserves the legacy positional fallback identity", () => {
+    const legacy = buildEventId({
+      ...identity,
+      sourceMessageId: null,
+      messageIndex: 7
+    });
+    const agent = buildAgentEventId({
+      ...identity,
+      sourceEventId: "index:7",
+      sequence: 7
+    });
+
+    expect(agent).toBe(legacy);
+  });
+
+  it("binds text segments and blob references to their immutable identities", () => {
+    const eventId = "a".repeat(64);
+    expect(buildAgentTextSegmentId({
+      eventId,
+      ordinal: 0,
+      purpose: "RENDERED_CONTENT",
+      contentSha256: "b".repeat(64)
+    })).not.toBe(buildAgentTextSegmentId({
+      eventId,
+      ordinal: 0,
+      purpose: "RENDERED_CONTENT",
+      contentSha256: "c".repeat(64)
+    }));
+    expect(buildAgentBlobReferenceId({
+      runId: "d".repeat(64),
+      eventId,
+      purpose: "ATTACHMENT",
+      requestedPath: "/tmp/demo.txt"
+    })).toMatch(/^[a-f0-9]{64}$/u);
   });
 });

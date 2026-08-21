@@ -117,6 +117,7 @@ grep -Fq '"AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP"' "$windows_runner"
 grep -Fq '"NODE_EXTRA_CA_CERTS"' "$windows_runner"
 grep -Fq 'Test-PrivateIPv4' "$windows_runner"
 windows_phase_patterns=(
+  '-LogPhase "prepare-agents" -SourceType ""'
   '-LogPhase "prepare-codex" -SourceType "CODEX"'
   '-LogPhase "prepare-claude-code" -SourceType "CLAUDE_CODE"'
   '-LogPhase "sync" -SourceType ""'
@@ -138,10 +139,11 @@ if grep -Eqi "NODE_TLS_REJECT_UNAUTHORIZED[^\r\n]*[=:][[:space:]]*0|rejectUnauth
   exit 1
 fi
 
-grep -Fq 'CLAUDE_CODE_SOURCE_INSTANCE_ID=' "$SCHEDULE_ROOT/collector.env.example"
-grep -Fq 'CLAUDE_CODE_SOURCE_PATH=' "$SCHEDULE_ROOT/collector.env.example"
+grep -Fq 'AI_WORKLOG_PROTOCOL_VERSION=2' "$SCHEDULE_ROOT/collector.env.example"
+grep -Fq 'ZCODE_HOOK_SPOOL' "$SCHEDULE_ROOT/collector.env.example"
+grep -Fq 'DSH_HOME' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=false' "$SCHEDULE_ROOT/collector.env.example"
-grep -Fq 'CLAUDE_CODE prepare' "$PROJECT_ROOT/README_SCHEDULES.md"
+grep -Fq '自动探测四类来源' "$PROJECT_ROOT/README_SCHEDULES.md"
 
 if grep -Eq '(^|[[:space:]])source[[:space:]]|eval[[:space:]]' "$SCHEDULE_ROOT/macos/run.sh"; then
   printf 'macOS runner must parse, not execute, its config file\n' >&2
@@ -191,12 +193,16 @@ printf '%s:%s\n' "${AI_WORKLOG_SOURCE_TYPE:-unset}" "${@: -1}" >>"$SCHEDULE_CAPT
 if [[ -n "${SCHEDULE_FAIL_SOURCE_TYPE:-}" && "${AI_WORKLOG_SOURCE_TYPE:-unset}" == "$SCHEDULE_FAIL_SOURCE_TYPE" ]]; then
   exit 1
 fi
+if [[ -n "${SCHEDULE_FAIL_COMMAND:-}" && "${@: -1}" == "$SCHEDULE_FAIL_COMMAND" ]]; then
+  exit 1
+fi
 FAKE_NODE
 chmod 700 "$fake_node"
 
 cat >"$config" <<'CONFIG'
 AI_WORKLOG_ACCOUNT_ID=account-test
 AI_WORKLOG_DEVICE_ID=device-test
+AI_WORKLOG_PROTOCOL_VERSION=2
 CODEX_SOURCE_INSTANCE_ID=codex-test
 CLAUDE_CODE_SOURCE_INSTANCE_ID=claude-code-test
 AI_WORKLOG_SYNC_URL=https://example.invalid/api/v1/sync/batches
@@ -242,12 +248,8 @@ run_output="$(HOME="$temporary_directory/home" \
   printf 'scheduled run exposed the device token\n' >&2
   exit 1
 }
-[[ "$run_output" == *'"phase":"prepare-codex","status":"ok"'* ]] || {
-  printf 'scheduled run did not prepare Codex with a reusable lock file\n' >&2
-  exit 1
-}
-[[ "$run_output" == *'"phase":"prepare-claude-code","status":"ok"'* ]] || {
-  printf 'scheduled run did not prepare Claude Code\n' >&2
+[[ "$run_output" == *'"phase":"prepare-agents","status":"ok"'* ]] || {
+  printf 'scheduled run did not auto-discover Agent sources with a reusable lock file\n' >&2
   exit 1
 }
 [[ "$run_output" == *'"phase":"sync","status":"ok"'* ]] || {
@@ -262,10 +264,26 @@ run_output="$(HOME="$temporary_directory/home" \
   printf 'scheduled run did not preserve its reusable lock file\n' >&2
   exit 1
 }
-expected_calls=$'CODEX:prepare\nCLAUDE_CODE:prepare\nunset:sync'
+expected_calls=$'unset:prepare\nunset:sync'
 actual_calls="$(cat "$capture_path")"
 [[ "$actual_calls" == "$expected_calls" ]] || {
-  printf 'collector phases did not run exactly once in CODEX, CLAUDE_CODE, sync order\n' >&2
+  printf 'collector phases did not run exactly once in auto-prepare, sync order\n' >&2
+  exit 1
+}
+
+v1_config="$temporary_directory/protocol-v1.env"
+sed 's/AI_WORKLOG_PROTOCOL_VERSION=2/AI_WORKLOG_PROTOCOL_VERSION=1/' \
+  "$config" >"$v1_config"
+chmod 600 "$v1_config"
+: >"$capture_path"
+v1_output="$(HOME="$temporary_directory/home" \
+  SCHEDULE_CAPTURE_PATH="$capture_path" \
+  bash "$SCHEDULE_ROOT/macos/run.sh" --config "$v1_config" 2>&1)"
+v1_expected_calls=$'CODEX:prepare\nCLAUDE_CODE:prepare\nunset:sync'
+[[ "$(cat "$capture_path")" == "$v1_expected_calls" \
+  && "$v1_output" == *'"phase":"prepare-codex","status":"ok"'* \
+  && "$v1_output" == *'"phase":"prepare-claude-code","status":"ok"'* ]] || {
+  printf 'protocol v1 rollback did not preserve the legacy prepare order\n' >&2
   exit 1
 }
 
@@ -295,19 +313,18 @@ wait "$collector_lock_holder"
 : >"$capture_path"
 if HOME="$temporary_directory/home" \
   SCHEDULE_CAPTURE_PATH="$capture_path" \
-  SCHEDULE_FAIL_SOURCE_TYPE="CODEX" \
+  SCHEDULE_FAIL_COMMAND="prepare" \
   bash "$SCHEDULE_ROOT/macos/run.sh" --config "$config" \
   >"$temporary_directory/partial.out" 2>&1; then
-  printf 'scheduled run hid a partial prepare failure\n' >&2
+  printf 'scheduled run hid an auto-prepare failure\n' >&2
   exit 1
 fi
 partial_calls="$(cat "$capture_path")"
 [[ "$partial_calls" == "$expected_calls" ]] || {
-  printf 'a failed source prevented the other source or Outbox sync\n' >&2
+  printf 'a failed auto-prepare prevented Outbox sync\n' >&2
   exit 1
 }
-grep -q '"phase":"prepare-codex","status":"failed"' "$temporary_directory/partial.out"
-grep -q '"phase":"prepare-claude-code","status":"ok"' "$temporary_directory/partial.out"
+grep -q '"phase":"prepare-agents","status":"failed"' "$temporary_directory/partial.out"
 grep -q '"phase":"sync","status":"ok"' "$temporary_directory/partial.out"
 grep -q '"phase":"schedule","status":"partial"' "$temporary_directory/partial.out"
 

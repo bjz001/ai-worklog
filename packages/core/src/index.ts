@@ -10,6 +10,34 @@ export interface EventIdentity {
   messageIndex: number;
 }
 
+export interface AgentRunIdentity {
+  accountId: string;
+  deviceId: string;
+  sourceType: string;
+  sourceInstanceId: string;
+  sourceSessionId: string;
+}
+
+export interface AgentEventIdentity extends AgentRunIdentity {
+  sourceEventId: string;
+  sequence: number;
+}
+
+export interface AgentTextSegmentIdentity {
+  eventId: string;
+  ordinal: number;
+  purpose: string;
+  contentSha256: string;
+  groupSha256?: string;
+}
+
+export interface AgentBlobReferenceIdentity {
+  runId: string;
+  eventId?: string | null;
+  purpose: string;
+  requestedPath?: string | null;
+}
+
 export function sha256Hex(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -26,6 +54,55 @@ export function buildEventId(identity: EventIdentity): string {
   ];
 
   return sha256Hex(stableParts.join("\u001f"));
+}
+
+export function buildAgentRunId(identity: AgentRunIdentity): string {
+  return sha256Hex([
+    "agent-run-v2",
+    identity.accountId,
+    identity.deviceId,
+    identity.sourceType.toUpperCase(),
+    identity.sourceInstanceId,
+    identity.sourceSessionId
+  ].join("\u001f"));
+}
+
+export function buildAgentEventId(identity: AgentEventIdentity): string {
+  const positionalFallback = `index:${identity.sequence}`;
+  return buildEventId({
+    ...identity,
+    sourceMessageId:
+      identity.sourceEventId === positionalFallback
+        ? null
+        : identity.sourceEventId,
+    messageIndex: identity.sequence
+  });
+}
+
+export function buildAgentTextSegmentId(
+  identity: AgentTextSegmentIdentity
+): string {
+  const parts = [
+    "agent-text-segment-v2",
+    identity.eventId,
+    String(identity.ordinal),
+    identity.purpose,
+    identity.contentSha256
+  ];
+  if (identity.groupSha256 !== undefined) parts.push(identity.groupSha256);
+  return sha256Hex(parts.join("\u001f"));
+}
+
+export function buildAgentBlobReferenceId(
+  identity: AgentBlobReferenceIdentity
+): string {
+  return sha256Hex([
+    "agent-blob-reference-v2",
+    identity.runId,
+    identity.eventId ?? "run",
+    identity.purpose,
+    identity.requestedPath ?? ""
+  ].join("\u001f"));
 }
 
 export function normalizeGitRemote(remote: string): string | null {

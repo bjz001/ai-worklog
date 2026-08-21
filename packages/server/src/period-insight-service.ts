@@ -14,14 +14,15 @@ import {
   type GeneratedLlmPeriodSummary,
   type SummaryEvidence
 } from "./llm-summary";
-import {
-  getLlmSettingsView,
-  getRuntimeLlmSettings
-} from "./llm-settings-service";
+import { getRuntimeLlmSettings } from "./llm-settings-service";
 import {
   expectedDeviceIdsForDate,
   latestSummaryMatchesInput
 } from "./insight-service";
+import {
+  summaryPromptFingerprint,
+  summaryPromptTemplateVersion
+} from "./summary-prompts";
 import { summaryPeriod, type SummaryPeriod } from "./periods";
 import {
   utcRangeForWorkDate,
@@ -387,6 +388,7 @@ async function persistPeriodSummary(options: {
   summary: GeneratedLlmPeriodSummary;
   provider: string;
   model: string;
+  templateVersion: string;
 }): Promise<{ generated: boolean; summaryId: string }> {
   const connection = await options.pool.getConnection();
   const lockName = periodSummaryLockName(
@@ -452,7 +454,7 @@ async function persistPeriodSummary(options: {
            (id, account_id, period_type, period_start, period_end, time_zone,
             revision, status, input_fingerprint, content, coverage,
             model_provider, model_name, template_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm-period-summary-v1')
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE id = id`,
         [
           summaryId,
@@ -476,7 +478,8 @@ async function persistPeriodSummary(options: {
             metadataTruncated: options.snapshot.metadataTruncated
           }),
           options.provider,
-          options.model
+          options.model,
+          options.templateVersion
         ]
       );
       const [identifierRows] = await connection.execute<IdentifierRow[]>(
@@ -559,7 +562,8 @@ async function persistPeriodSummary(options: {
               sourceEvidenceCount: options.snapshot.promptCount,
               status: options.summary.dataCompleteness,
               provider: options.provider,
-              model: options.model
+              model: options.model,
+              templateVersion: options.templateVersion
             })
           ]
         );
@@ -617,15 +621,29 @@ async function refreshPeriodInsightsOnce(options: {
     };
   }
 
-  const llmView = await getLlmSettingsView({
+  const llmSettings = await getRuntimeLlmSettings({
     pool: options.pool,
-    accountId: options.accountId
+    accountId: options.accountId,
+    masterKey: options.masterKey ?? parseLlmEncryptionKey()
   });
+  const promptScope = period.periodType;
+  const promptInstructions = promptScope === "WEEK"
+    ? llmSettings.summaryPrompts.weekly
+    : llmSettings.summaryPrompts.monthly;
+  const promptFingerprint = summaryPromptFingerprint(
+    promptScope,
+    promptInstructions
+  );
+  const templateVersion = summaryPromptTemplateVersion(
+    promptScope,
+    promptInstructions
+  );
   const canonicalGeneratorFingerprint = [
     "llm-period-summary-v1",
-    llmView.provider,
-    llmView.baseUrl,
-    llmView.model
+    llmSettings.provider,
+    llmSettings.baseUrl,
+    llmSettings.model,
+    promptFingerprint
   ].join(":");
   const canonicalInputFingerprint = periodSummaryFingerprint({
     ...period,
@@ -668,11 +686,6 @@ async function refreshPeriodInsightsOnce(options: {
     };
   }
 
-  const llmSettings = await getRuntimeLlmSettings({
-    pool: options.pool,
-    accountId: options.accountId,
-    masterKey: options.masterKey ?? parseLlmEncryptionKey()
-  });
   const summary = await generateLlmPeriodSummary({
     settings: llmSettings,
     ...period,
@@ -703,7 +716,8 @@ async function refreshPeriodInsightsOnce(options: {
     snapshot,
     summary,
     provider: llmSettings.provider,
-    model: llmSettings.model
+    model: llmSettings.model,
+    templateVersion
   });
   return {
     period,

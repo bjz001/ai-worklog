@@ -5,6 +5,10 @@ import {
   normalizeLlmBaseUrl,
   saveLlmSettings
 } from "./llm-settings-service";
+import {
+  DEFAULT_SUMMARY_PROMPTS,
+  buildSummarySystemPrompt
+} from "./summary-prompts";
 
 describe("normalizeLlmBaseUrl", () => {
   it("normalizes the official DeepSeek endpoint", () => {
@@ -93,7 +97,178 @@ describe("LLM settings persistence", () => {
       baseUrl: "https://api.deepseek.com",
       model: "deepseek-v4-flash",
       hasApiKey: false,
-      updatedAt: null
+      updatedAt: null,
+      summaryPrompts: {
+        daily: {
+          instructions: DEFAULT_SUMMARY_PROMPTS.daily,
+          defaultInstructions: DEFAULT_SUMMARY_PROMPTS.daily,
+          effectivePrompt: buildSummarySystemPrompt(
+            "DAILY",
+            DEFAULT_SUMMARY_PROMPTS.daily
+          ),
+          isCustomized: false
+        },
+        weekly: {
+          instructions: DEFAULT_SUMMARY_PROMPTS.weekly,
+          defaultInstructions: DEFAULT_SUMMARY_PROMPTS.weekly,
+          effectivePrompt: buildSummarySystemPrompt(
+            "WEEK",
+            DEFAULT_SUMMARY_PROMPTS.weekly
+          ),
+          isCustomized: false
+        },
+        monthly: {
+          instructions: DEFAULT_SUMMARY_PROMPTS.monthly,
+          defaultInstructions: DEFAULT_SUMMARY_PROMPTS.monthly,
+          effectivePrompt: buildSummarySystemPrompt(
+            "MONTH",
+            DEFAULT_SUMMARY_PROMPTS.monthly
+          ),
+          isCustomized: false
+        }
+      }
+    });
+  });
+
+  it("returns custom guidance while keeping the effective safety contract", async () => {
+    const pool: LlmSettingsQueryExecutor = {
+      execute: async () => [[{
+        provider: "DEEPSEEK",
+        base_url: "https://api.deepseek.com",
+        model: "deepseek-v4-flash",
+        encrypted_api_key: "ciphertext",
+        daily_summary_prompt: "突出当天已完成的用户价值。",
+        weekly_summary_prompt: null,
+        monthly_summary_prompt: null,
+        updated_at: new Date("2026-07-15T08:00:00.000Z")
+      }], []]
+    };
+
+    const result = await getLlmSettingsView({
+      pool,
+      accountId: "account_demo"
+    });
+
+    expect(result.summaryPrompts.daily).toMatchObject({
+      instructions: "突出当天已完成的用户价值。",
+      defaultInstructions: DEFAULT_SUMMARY_PROMPTS.daily,
+      isCustomized: true
+    });
+    expect(result.summaryPrompts.daily.effectivePrompt).toContain(
+      "evidenceIds"
+    );
+    expect(result.summaryPrompts.weekly.isCustomized).toBe(false);
+  });
+
+  it("preserves stored prompt overrides when an update omits summaryPrompts", async () => {
+    const existing = {
+      provider: "DEEPSEEK",
+      base_url: "https://api.deepseek.com",
+      model: "deepseek-v4-flash",
+      encrypted_api_key: "v1.synthetic.ciphertext.envelope",
+      daily_summary_prompt: "保留日总结要求。",
+      weekly_summary_prompt: null,
+      monthly_summary_prompt: "保留月总结要求。",
+      updated_at: new Date("2026-07-15T08:00:00.000Z")
+    };
+    let selectCount = 0;
+    let writtenValues: unknown[] = [];
+    const pool: LlmSettingsQueryExecutor = {
+      execute: async (sql: string, parameters?: unknown) => {
+        if (sql.includes("SELECT provider")) {
+          selectCount += 1;
+          if (selectCount === 1) return [[existing], []];
+          return [[{
+            ...existing,
+            daily_summary_prompt: writtenValues[5],
+            weekly_summary_prompt: writtenValues[6],
+            monthly_summary_prompt: writtenValues[7],
+            updated_at: new Date("2026-07-15T09:00:00.000Z")
+          }], []];
+        }
+        if (sql.includes("INSERT INTO llm_settings")) {
+          writtenValues = Array.isArray(parameters) ? parameters : [];
+        }
+        return [{ affectedRows: 1 }, []];
+      }
+    };
+
+    const result = await saveLlmSettings({
+      pool,
+      accountId: "account_demo",
+      masterKey,
+      input: {
+        provider: "DEEPSEEK",
+        baseUrl: "https://api.deepseek.com",
+        model: "deepseek-v4-flash"
+      }
+    });
+
+    expect(writtenValues.slice(5, 8)).toEqual([
+      "保留日总结要求。",
+      null,
+      "保留月总结要求。"
+    ]);
+    expect(result.summaryPrompts.daily.instructions).toBe("保留日总结要求。");
+    expect(result.summaryPrompts.weekly.defaultInstructions).toBe(
+      DEFAULT_SUMMARY_PROMPTS.weekly
+    );
+  });
+
+  it("restores defaults when prompt overrides are explicitly null", async () => {
+    const existing = {
+      provider: "DEEPSEEK",
+      base_url: "https://api.deepseek.com",
+      model: "deepseek-v4-flash",
+      encrypted_api_key: "v1.synthetic.ciphertext.envelope",
+      daily_summary_prompt: "旧日总结要求。",
+      weekly_summary_prompt: "旧周总结要求。",
+      monthly_summary_prompt: "旧月总结要求。",
+      updated_at: new Date("2026-07-15T08:00:00.000Z")
+    };
+    let selectCount = 0;
+    let writtenValues: unknown[] = [];
+    const pool: LlmSettingsQueryExecutor = {
+      execute: async (sql: string, parameters?: unknown) => {
+        if (sql.includes("SELECT provider")) {
+          selectCount += 1;
+          if (selectCount === 1) return [[existing], []];
+          return [[{
+            ...existing,
+            daily_summary_prompt: writtenValues[5],
+            weekly_summary_prompt: writtenValues[6],
+            monthly_summary_prompt: writtenValues[7],
+            updated_at: new Date("2026-07-15T09:00:00.000Z")
+          }], []];
+        }
+        if (sql.includes("INSERT INTO llm_settings")) {
+          writtenValues = Array.isArray(parameters) ? parameters : [];
+        }
+        return [{ affectedRows: 1 }, []];
+      }
+    };
+
+    const result = await saveLlmSettings({
+      pool,
+      accountId: "account_demo",
+      masterKey,
+      input: {
+        provider: "DEEPSEEK",
+        baseUrl: "https://api.deepseek.com",
+        model: "deepseek-v4-flash",
+        summaryPrompts: {
+          daily: null,
+          weekly: null,
+          monthly: null
+        }
+      }
+    });
+
+    expect(writtenValues.slice(5, 8)).toEqual([null, null, null]);
+    expect(result.summaryPrompts.daily).toMatchObject({
+      instructions: DEFAULT_SUMMARY_PROMPTS.daily,
+      defaultInstructions: DEFAULT_SUMMARY_PROMPTS.daily,
+      isCustomized: false
     });
   });
 

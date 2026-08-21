@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { readBoundedRequestBytes } from "./bounded-request-body";
 
 const MAX_MUTATION_BODY_BYTES = 16 * 1024;
 
@@ -56,26 +57,17 @@ export async function readJsonMutation(
       "请求必须使用 application/json"
     );
   }
-  const declaredLength = Number(request.headers.get("content-length"));
-  if (
-    Number.isFinite(declaredLength) &&
-    declaredLength > MAX_MUTATION_BODY_BYTES
-  ) {
-    throw new MutationSecurityError(
+  const bytes = await readBoundedRequestBytes(
+    request,
+    MAX_MUTATION_BODY_BYTES,
+    () => new MutationSecurityError(
       "PAYLOAD_TOO_LARGE",
       413,
       "请求体超过允许大小"
-    );
-  }
-  const body = await request.text();
-  if (Buffer.byteLength(body, "utf8") > MAX_MUTATION_BODY_BYTES) {
-    throw new MutationSecurityError(
-      "PAYLOAD_TOO_LARGE",
-      413,
-      "请求体超过允许大小"
-    );
-  }
+    )
+  );
   try {
+    const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return JSON.parse(body) as unknown;
   } catch {
     throw new MutationSecurityError(

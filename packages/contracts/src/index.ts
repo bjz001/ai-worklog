@@ -143,10 +143,523 @@ export type SyncEvent = z.infer<typeof SyncEventSchema>;
 export type SyncBatchResult = z.infer<typeof SyncBatchResultSchema>;
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 
+export const MAX_BLOB_CHUNK_BYTES = 1024 * 1024;
+export const MAX_AGENT_SYNC_RECORDS = 1_000;
+
+export const AgentSourceTypeSchema = z.enum([
+  "CODEX",
+  "CLAUDE_CODE",
+  "ZCODE",
+  "DSH"
+]);
+
+export const AgentEventKindSchema = z.enum([
+  "SYSTEM",
+  "CONTEXT",
+  "USER",
+  "ASSISTANT",
+  "REASONING",
+  "TOOL_CALL",
+  "TOOL_RESULT",
+  "SUBAGENT",
+  "STATE",
+  "TURN_BOUNDARY",
+  "ERROR",
+  "SOURCE_EVENT"
+]);
+
+export const RawCaptureStatusSchema = z.enum([
+  "CAPTURED",
+  "PARTIAL",
+  "NOT_EXPOSED",
+  "UNREADABLE",
+  "CORRUPT"
+]);
+
+export const NormalizedCoverageSchema = z.enum([
+  "FULL",
+  "PARTIAL",
+  "NONE",
+  "UNKNOWN"
+]);
+
+export const AttachmentStatusSchema = z.enum([
+  "NOT_APPLICABLE",
+  "PENDING",
+  "CAPTURED",
+  "MISSING",
+  "READ_ERROR",
+  "NOT_REGULAR",
+  "STORAGE_FULL"
+]);
+
+const AgentRecordMetadataSchema = z.record(z.string(), z.unknown());
+
+export const AgentRunRecordSchema = z
+  .object({
+    recordType: z.literal("RUN"),
+    runId: Sha256Schema,
+    sourceSessionId: z.string().min(1).max(1_024),
+    startedAt: DateTimeSchema,
+    endedAt: DateTimeSchema.nullable().optional(),
+    sourceTimeZone: z.string().min(1).max(64),
+    title: z.string().max(4_096).nullable().optional(),
+    cwd: z.string().max(32_768).nullable().optional(),
+    parentRunId: Sha256Schema.nullable().optional(),
+    projectHint: ProjectHintSchema.optional(),
+    rawCaptureStatus: RawCaptureStatusSchema,
+    normalizedCoverage: NormalizedCoverageSchema,
+    attachmentStatus: AttachmentStatusSchema,
+    missingReason: z.string().min(1).max(4_096).optional(),
+    metadata: AgentRecordMetadataSchema.default({})
+  })
+  .strict();
+
+export const AgentEventRecordSchema = z
+  .object({
+    recordType: z.literal("EVENT"),
+    eventId: Sha256Schema,
+    runId: Sha256Schema,
+    sourceEventId: z.string().min(1).max(1_024),
+    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    turnIndex: z.number().int().nonnegative().nullable().optional(),
+    stepIndex: z.number().int().nonnegative().nullable().optional(),
+    kind: AgentEventKindSchema,
+    occurredAt: DateTimeSchema,
+    sourceTimeZone: z.string().min(1).max(64),
+    replyToEventId: Sha256Schema.nullable().optional(),
+    mirrorOfEventId: Sha256Schema.nullable().optional(),
+    contentSha256: Sha256Schema.nullable().optional(),
+    rawPayloadSha256: Sha256Schema.nullable().optional(),
+    rawCaptureStatus: RawCaptureStatusSchema,
+    normalizedCoverage: NormalizedCoverageSchema,
+    attachmentStatus: AttachmentStatusSchema,
+    missingReason: z.string().min(1).max(4_096).optional(),
+    metadata: AgentRecordMetadataSchema.default({})
+  })
+  .strict()
+  .superRefine((event, context) => {
+    if (event.rawCaptureStatus !== "CAPTURED" && !event.missingReason) {
+      context.addIssue({
+        code: "custom",
+        path: ["missingReason"],
+        message: "missingReason is required when raw capture is incomplete"
+      });
+    }
+  });
+
+export const AgentTextSegmentRecordSchema = z
+  .object({
+    recordType: z.literal("TEXT_SEGMENT"),
+    segmentId: Sha256Schema,
+    eventId: Sha256Schema,
+    ordinal: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    format: z.enum(["TEXT", "MARKDOWN", "JSON"]),
+    purpose: z.enum([
+      "RENDERED_CONTENT",
+      "RAW_PAYLOAD",
+      "TOOL_ARGUMENTS",
+      "TOOL_RESULT",
+      "SEARCH_TEXT"
+    ]),
+    text: z.string(),
+    contentSha256: Sha256Schema,
+    byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    groupSha256: Sha256Schema.optional(),
+    groupByteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    groupSegmentCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    isSearchable: z.boolean()
+  })
+  .strict()
+  .superRefine((segment, context) => {
+    const hasGroupField = segment.groupSha256 !== undefined ||
+      segment.groupByteLength !== undefined ||
+      segment.groupSegmentCount !== undefined;
+    const hasCompleteGroup = segment.groupSha256 !== undefined &&
+      segment.groupByteLength !== undefined &&
+      segment.groupSegmentCount !== undefined;
+    if (hasGroupField && !hasCompleteGroup) {
+      context.addIssue({
+        code: "custom",
+        path: ["groupSha256"],
+        message: "all text group fields must be supplied together"
+      });
+    }
+    if (
+      segment.groupSegmentCount !== undefined &&
+      segment.ordinal >= segment.groupSegmentCount
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["ordinal"],
+        message: "ordinal must be smaller than groupSegmentCount"
+      });
+    }
+    if (
+      segment.groupByteLength !== undefined &&
+      segment.byteLength > segment.groupByteLength
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["byteLength"],
+        message: "segment byteLength exceeds its text group"
+      });
+    }
+  });
+
+export const AgentBlobReferenceRecordSchema = z
+  .object({
+    recordType: z.literal("BLOB_REFERENCE"),
+    referenceId: Sha256Schema,
+    eventId: Sha256Schema.nullable().optional(),
+    runId: Sha256Schema,
+    blobSha256: Sha256Schema.nullable(),
+    purpose: z.enum([
+      "RAW_EVENT",
+      "SOURCE_TRANSCRIPT",
+      "ATTACHMENT",
+      "TEXT_OVERFLOW"
+    ]),
+    requestedPath: z.string().max(32_768).nullable().optional(),
+    realPath: z.string().max(32_768).nullable().optional(),
+    filename: z.string().max(4_096).nullable().optional(),
+    mediaType: z.string().min(1).max(255).nullable().optional(),
+    byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+    capturedAt: DateTimeSchema.nullable().optional(),
+    status: AttachmentStatusSchema,
+    failureReason: z.string().min(1).max(4_096).nullable().optional(),
+    metadata: AgentRecordMetadataSchema.default({})
+  })
+  .strict()
+  .superRefine((reference, context) => {
+    if (
+      ["MISSING", "READ_ERROR", "NOT_REGULAR", "STORAGE_FULL"].includes(
+        reference.status
+      ) &&
+      !reference.failureReason
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["failureReason"],
+        message: "failureReason is required for failed attachment capture"
+      });
+    }
+    if (reference.status === "CAPTURED" && !reference.blobSha256) {
+      context.addIssue({
+        code: "custom",
+        path: ["blobSha256"],
+        message: "blobSha256 is required for a captured reference"
+      });
+    }
+  });
+
+export const AgentSyncRecordSchema = z.discriminatedUnion("recordType", [
+  AgentRunRecordSchema,
+  AgentEventRecordSchema,
+  AgentTextSegmentRecordSchema,
+  AgentBlobReferenceRecordSchema
+]);
+
+export const AgentSyncBatchRequestSchema = z
+  .object({
+    protocolVersion: z.literal(2),
+    batchId: z.string().min(1).max(128),
+    createdAt: DateTimeSchema,
+    source: z
+      .object({
+        type: AgentSourceTypeSchema,
+        instanceId: z.string().min(1).max(128),
+        parserVersion: z.string().min(1).max(64)
+      })
+      .strict(),
+    records: z.array(AgentSyncRecordSchema).min(1).max(MAX_AGENT_SYNC_RECORDS)
+  })
+  .strict();
+
+export const SyncRequestSchema = z.discriminatedUnion("protocolVersion", [
+  SyncBatchRequestSchema,
+  AgentSyncBatchRequestSchema
+]);
+
+export const BlobManifestRequestSchema = z
+  .object({
+    byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    chunkSize: z.literal(MAX_BLOB_CHUNK_BYTES),
+    mediaType: z.string().min(1).max(255),
+    filename: z.string().min(1).max(4_096).optional()
+  })
+  .strict();
+
+export const BlobCompleteRequestSchema = z
+  .object({
+    byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    chunkCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    sha256: Sha256Schema
+  })
+  .strict()
+  .superRefine((request, context) => {
+    const expected = Math.ceil(request.byteLength / MAX_BLOB_CHUNK_BYTES);
+    if (request.chunkCount !== expected) {
+      context.addIssue({
+        code: "custom",
+        path: ["chunkCount"],
+        message: "chunkCount does not match byteLength"
+      });
+    }
+  });
+
+export const BlobInitializeResponseSchema = z
+  .object({
+    data: z
+      .object({
+        sha256: Sha256Schema,
+        status: z.enum([
+          "PENDING",
+          "UPLOADING",
+          "COMPLETE",
+          "FAILED",
+          "STORAGE_FULL"
+        ]),
+        chunkSize: z.literal(MAX_BLOB_CHUNK_BYTES),
+        chunkCount: z.number().int().nonnegative(),
+        receivedChunks: z.array(z.number().int().nonnegative())
+      })
+      .strict()
+  })
+  .strict();
+
+export const BlobChunkResponseSchema = z
+  .object({
+    data: z
+      .object({
+        sha256: Sha256Schema,
+        index: z.number().int().nonnegative(),
+        chunkSha256: Sha256Schema,
+        wasDuplicate: z.boolean()
+      })
+      .strict()
+  })
+  .strict();
+
+export const BlobCompleteResponseSchema = z
+  .object({
+    data: z
+      .object({
+        sha256: Sha256Schema,
+        status: z.literal("COMPLETE"),
+        byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
+      })
+      .strict()
+  })
+  .strict();
+
+export type AgentSourceType = z.infer<typeof AgentSourceTypeSchema>;
+export type AgentEventKind = z.infer<typeof AgentEventKindSchema>;
+export type RawCaptureStatus = z.infer<typeof RawCaptureStatusSchema>;
+export type NormalizedCoverage = z.infer<typeof NormalizedCoverageSchema>;
+export type AttachmentStatus = z.infer<typeof AttachmentStatusSchema>;
+export type AgentRunRecord = z.infer<typeof AgentRunRecordSchema>;
+export type AgentEventRecord = z.infer<typeof AgentEventRecordSchema>;
+export type AgentTextSegmentRecord = z.infer<typeof AgentTextSegmentRecordSchema>;
+export type AgentBlobReferenceRecord = z.infer<
+  typeof AgentBlobReferenceRecordSchema
+>;
+export type AgentSyncRecord = z.infer<typeof AgentSyncRecordSchema>;
+export type AgentSyncBatchRequest = z.infer<
+  typeof AgentSyncBatchRequestSchema
+>;
+export type SyncRequest = z.infer<typeof SyncRequestSchema>;
+export type BlobManifestRequest = z.infer<typeof BlobManifestRequestSchema>;
+export type BlobCompleteRequest = z.infer<typeof BlobCompleteRequestSchema>;
+export type BlobInitializeResponse = z.infer<
+  typeof BlobInitializeResponseSchema
+>;
+export type BlobChunkResponse = z.infer<typeof BlobChunkResponseSchema>;
+export type BlobCompleteResponse = z.infer<typeof BlobCompleteResponseSchema>;
+
+export const AgentRunViewSchema = z
+  .object({
+    id: z.string().min(1),
+    runId: Sha256Schema.nullable(),
+    sourceType: AgentSourceTypeSchema,
+    sourceSessionId: z.string(),
+    title: z.string().nullable(),
+    cwd: z.string().nullable(),
+    projectId: z.string().nullable(),
+    projectName: z.string(),
+    deviceId: z.string(),
+    deviceName: z.string(),
+    startedAt: DateTimeSchema,
+    endedAt: DateTimeSchema.nullable(),
+    eventCount: z.number().int().nonnegative(),
+    turnCount: z.number().int().nonnegative(),
+    matchedEventCount: z.number().int().nonnegative(),
+    matchSnippet: z.string().nullable(),
+    rawCaptureStatus: RawCaptureStatusSchema,
+    normalizedCoverage: NormalizedCoverageSchema,
+    attachmentStatus: AttachmentStatusSchema
+  })
+  .strict();
+
+export const AgentRunsResponseSchema = z
+  .object({
+    data: z.array(AgentRunViewSchema),
+    pagination: z
+      .object({
+        page: z.number().int().positive(),
+        pageSize: z.number().int().positive(),
+        totalItems: z.number().int().nonnegative(),
+        totalPages: z.number().int().nonnegative()
+      })
+      .strict()
+  })
+  .strict();
+
+export const AgentAttachmentViewSchema = z
+  .object({
+    id: z.string(),
+    referenceId: Sha256Schema,
+    purpose: z.enum([
+      "RAW_EVENT",
+      "SOURCE_TRANSCRIPT",
+      "ATTACHMENT",
+      "TEXT_OVERFLOW"
+    ]),
+    filename: z.string().nullable(),
+    requestedPath: z.string().nullable(),
+    realPath: z.string().nullable(),
+    byteLength: z.number().int().nonnegative().nullable(),
+    sha256: Sha256Schema.nullable(),
+    mediaType: z.string().nullable(),
+    status: AttachmentStatusSchema,
+    failureReason: z.string().nullable(),
+    downloadUrl: z.string().nullable()
+  })
+  .strict();
+
+export const AgentRunDetailResponseSchema = z
+  .object({
+    data: z
+      .object({
+        run: AgentRunViewSchema,
+        metadata: z.record(z.string(), z.unknown()),
+        completeness: z
+          .object({
+            missingReasons: z.array(z.string()),
+            textSegmentCount: z.number().int().nonnegative(),
+            pendingBlobCount: z.number().int().nonnegative()
+          })
+          .strict(),
+        attachments: z.array(AgentAttachmentViewSchema)
+      })
+      .strict()
+  })
+  .strict();
+
+export const AgentEventViewSchema = z
+  .object({
+    id: z.string(),
+    eventId: Sha256Schema,
+    sourceEventId: z.string().nullable(),
+    sequence: z.number().int().nonnegative(),
+    turnIndex: z.number().int().nonnegative().nullable(),
+    stepIndex: z.number().int().nonnegative().nullable(),
+    kind: AgentEventKindSchema,
+    occurredAt: DateTimeSchema,
+    replyToEventId: Sha256Schema.nullable(),
+    mirrorOfEventId: Sha256Schema.nullable(),
+    contentPreview: z.string().nullable(),
+    contentPurposes: z.array(z.enum([
+      "RENDERED_CONTENT",
+      "RAW_PAYLOAD",
+      "TOOL_ARGUMENTS",
+      "TOOL_RESULT",
+      "SEARCH_TEXT"
+    ])),
+    contentUrl: z.string().nullable(),
+    rawPayloadUrl: z.string().nullable(),
+    rawCaptureStatus: RawCaptureStatusSchema,
+    normalizedCoverage: NormalizedCoverageSchema,
+    attachmentStatus: AttachmentStatusSchema,
+    missingReason: z.string().nullable(),
+    metadata: z.record(z.string(), z.unknown()),
+    attachments: z.array(AgentAttachmentViewSchema)
+  })
+  .strict();
+
+export const AgentRunEventsResponseSchema = z
+  .object({
+    data: z.array(AgentEventViewSchema),
+    pagination: z
+      .object({
+        nextCursor: z.string().nullable(),
+        hasMore: z.boolean()
+      })
+      .strict()
+  })
+  .strict();
+
+export type AgentRunView = z.infer<typeof AgentRunViewSchema>;
+export type AgentRunsResponse = z.infer<typeof AgentRunsResponseSchema>;
+export type AgentRunDetailResponse = z.infer<
+  typeof AgentRunDetailResponseSchema
+>;
+export type AgentAttachmentView = z.infer<typeof AgentAttachmentViewSchema>;
+export type AgentEventView = z.infer<typeof AgentEventViewSchema>;
+export type AgentRunEventsResponse = z.infer<
+  typeof AgentRunEventsResponseSchema
+>;
+
 export const LlmProviderSchema = z.enum([
   "DEEPSEEK",
   "OPENAI_COMPATIBLE"
 ]);
+
+export const SummaryPromptInstructionsSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (value) => new TextEncoder().encode(value).byteLength <= 4_096,
+    { message: "Summary prompt must not exceed 4096 UTF-8 bytes" }
+  )
+  .refine(
+    (value) => Array.from(value).every((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return (
+        codePoint === 9 ||
+        codePoint === 10 ||
+        codePoint === 13 ||
+        (codePoint >= 32 && codePoint !== 127)
+      );
+    }),
+    { message: "Summary prompt must not contain control characters" }
+  );
+
+export const SummaryPromptOverridesSchema = z
+  .object({
+    daily: SummaryPromptInstructionsSchema.nullable(),
+    weekly: SummaryPromptInstructionsSchema.nullable(),
+    monthly: SummaryPromptInstructionsSchema.nullable()
+  })
+  .strict();
+
+export const SummaryPromptViewSchema = z
+  .object({
+    instructions: z.string(),
+    defaultInstructions: z.string(),
+    effectivePrompt: z.string(),
+    isCustomized: z.boolean()
+  })
+  .strict();
+
+export const SummaryPromptsViewSchema = z
+  .object({
+    daily: SummaryPromptViewSchema,
+    weekly: SummaryPromptViewSchema,
+    monthly: SummaryPromptViewSchema
+  })
+  .strict();
 
 export const LlmSettingsUpdateSchema = z
   .object({
@@ -158,7 +671,8 @@ export const LlmSettingsUpdateSchema = z
       .min(8)
       .max(1024)
       .regex(/^[\x21-\x7E]+$/)
-      .optional()
+      .optional(),
+    summaryPrompts: SummaryPromptOverridesSchema.optional()
   })
   .strict();
 
@@ -168,7 +682,8 @@ export const LlmSettingsViewSchema = z
     baseUrl: z.string(),
     model: z.string(),
     hasApiKey: z.boolean(),
-    updatedAt: z.string().nullable()
+    updatedAt: z.string().nullable(),
+    summaryPrompts: SummaryPromptsViewSchema
   })
   .strict();
 
@@ -190,6 +705,10 @@ export const LlmConnectionTestResponseSchema = z
   .strict();
 
 export type LlmProvider = z.infer<typeof LlmProviderSchema>;
+export type SummaryPromptOverrides = z.infer<
+  typeof SummaryPromptOverridesSchema
+>;
+export type SummaryPromptsView = z.infer<typeof SummaryPromptsViewSchema>;
 export type LlmSettingsUpdate = z.infer<typeof LlmSettingsUpdateSchema>;
 export type LlmSettingsView = z.infer<typeof LlmSettingsViewSchema>;
 export type LlmSettingsResponse = z.infer<typeof LlmSettingsResponseSchema>;
@@ -299,6 +818,7 @@ export const SummaryViewSchema = z
     id: z.string(),
     workDate: WorkDateSchema,
     status: z.enum(["complete", "partial"]),
+    inputTruncated: z.boolean().default(false),
     highlights: z.array(SummaryStatementSchema),
     projectProgress: z.array(SummaryStatementSchema),
     decisions: z.array(SummaryStatementSchema),

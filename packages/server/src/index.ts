@@ -8,6 +8,21 @@ export {
   type ServerIdentity
 } from "./auth";
 export {
+  BlobService,
+  BlobServiceError,
+  MysqlBlobRepository,
+  blobRootFromEnvironment,
+  getBlobDownload,
+  validatedBlobObjectPath,
+  type BlobDownload,
+  type BlobChunkResult,
+  type BlobChunkState,
+  type BlobCompleteResult,
+  type BlobInitializeResult,
+  type BlobObjectState,
+  type BlobRepository
+} from "./blob-service";
+export {
   DeviceServiceError,
   createDeviceEnrollment,
   rotateDeviceEnrollmentToken,
@@ -72,6 +87,18 @@ export {
   renderPeriodSummaryMarkdown
 } from "./summary-export";
 export {
+  AgentQueryNotFoundError,
+  decodeAgentEventCursor,
+  getAgentEventContent,
+  getAgentRunDetail,
+  listAgentEvents,
+  listAgentRuns,
+  openAgentEventContentStream,
+  type AgentEventContent,
+  type AgentEventContentStream,
+  type AgentTextPurpose
+} from "./agent-query-service";
+export {
   accountTimeZone,
   getCalendar,
   getDashboard,
@@ -97,12 +124,27 @@ export {
   syncRateLimiter
 } from "./rate-limit";
 export {
+  encodeAgentEventCursor,
+  parseAgentEventQuery,
+  parseAgentRunQuery,
   parseCalendarMonth,
   parsePromptQuery,
+  type AgentEventCursor,
+  type AgentEventQuery,
+  type AgentRunQuery,
   type PromptQuery
 } from "./query-input";
 export { summaryPeriod, type SummaryPeriod } from "./periods";
 export { workDateInTimeZone } from "./presentation";
+export {
+  AgentPayloadIntegrityError,
+  commitAgentSyncBatch,
+  orderedAgentRecords,
+  persistAgentSyncRecords,
+  validateAgentBatchIntegrity,
+  type AgentRecordMutationCounts,
+  type CommitAgentSyncBatchOptions
+} from "./agent-sync-service";
 export {
   BatchConflictError,
   EventIdentityMismatchError,

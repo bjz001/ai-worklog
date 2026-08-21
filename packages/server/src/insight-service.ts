@@ -16,16 +16,17 @@ import {
   workDateInTimeZone
 } from "./presentation";
 import { parseLlmEncryptionKey } from "./llm-crypto";
-import {
-  getLlmSettingsView,
-  getRuntimeLlmSettings
-} from "./llm-settings-service";
+import { getRuntimeLlmSettings } from "./llm-settings-service";
 import {
   generateLlmDailySummary,
   type GeneratedLlmSummary,
   type SummaryEvidence
 } from "./llm-summary";
 import type { LlmFetcher, LlmResolver } from "./llm-client";
+import {
+  summaryPromptFingerprint,
+  summaryPromptTemplateVersion
+} from "./summary-prompts";
 
 interface EvidenceRow extends RowDataPacket {
   id: string;
@@ -377,15 +378,26 @@ async function refreshDailyInsightsLocked(options: {
     )
   ]);
   const expectedDeviceIds = deviceRows;
-  const llmView = await getLlmSettingsView({
+  const llmSettings = await getRuntimeLlmSettings({
     pool: options.connection,
-    accountId: options.accountId
+    accountId: options.accountId,
+    masterKey: options.masterKey ?? parseLlmEncryptionKey()
   });
+  const promptInstructions = llmSettings.summaryPrompts.daily;
+  const promptFingerprint = summaryPromptFingerprint(
+    "DAILY",
+    promptInstructions
+  );
+  const templateVersion = summaryPromptTemplateVersion(
+    "DAILY",
+    promptInstructions
+  );
   const canonicalGeneratorFingerprint = [
     "llm-summary-v1",
-    llmView.provider,
-    llmView.baseUrl,
-    llmView.model
+    llmSettings.provider,
+    llmSettings.baseUrl,
+    llmSettings.model,
+    promptFingerprint
   ].join(":");
   const evidenceFingerprint = summaryEvidenceFingerprint(evidence);
   const canonicalInputFingerprint = summaryFingerprint({
@@ -441,11 +453,6 @@ async function refreshDailyInsightsLocked(options: {
     };
   }
 
-  const llmSettings = await getRuntimeLlmSettings({
-    pool: options.connection,
-    accountId: options.accountId,
-    masterKey: options.masterKey ?? parseLlmEncryptionKey()
-  });
   const summary = await generateLlmDailySummary({
     settings: llmSettings,
     workDate: options.workDate,
@@ -472,7 +479,7 @@ async function refreshDailyInsightsLocked(options: {
          (id, account_id, work_date, time_zone, revision, status,
           input_fingerprint, content, coverage, model_provider, model_name,
           template_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm-summary-v1')
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE id = id`,
       [
         summaryId,
@@ -489,7 +496,8 @@ async function refreshDailyInsightsLocked(options: {
         }),
         JSON.stringify({ expectedDeviceIds, arrivedDeviceIds }),
         llmSettings.provider,
-        llmSettings.model
+        llmSettings.model,
+        templateVersion
       ]
     );
     const [summaryRows] = await connection.execute<IdentifierRow[]>(
@@ -542,7 +550,8 @@ async function refreshDailyInsightsLocked(options: {
             evidenceCount: evidence.length,
             status: summary.status,
             provider: llmSettings.provider,
-            model: llmSettings.model
+            model: llmSettings.model,
+            templateVersion
           })
         ]
       );

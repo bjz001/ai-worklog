@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseCalendarMonth, parsePromptQuery } from "./query-input";
+import {
+  encodeAgentEventCursor,
+  parseAgentEventQuery,
+  parseAgentRunQuery,
+  parseCalendarMonth,
+  parsePromptQuery
+} from "./query-input";
 
 describe("parsePromptQuery", () => {
   it("normalizes bounded pagination and supported filters", () => {
@@ -52,5 +58,69 @@ describe("parseCalendarMonth", () => {
     expect(parseCalendarMonth("2026-07")).toBe("2026-07");
     expect(() => parseCalendarMonth("2026-13")).toThrow("month");
     expect(() => parseCalendarMonth("../../etc")).toThrow("month");
+  });
+});
+
+describe("parseAgentRunQuery", () => {
+  it("parses bounded run-level search and all trajectory filters", () => {
+    expect(parseAgentRunQuery(new URLSearchParams({
+      page: "2",
+      pageSize: "25",
+      q: "  工具结果  ",
+      source: "DSH",
+      from: "2026-08-01",
+      to: "2026-08-21",
+      projectId: "project-1",
+      eventKind: "TOOL_RESULT",
+      completeness: "PARTIAL"
+    }))).toEqual({
+      page: 2,
+      pageSize: 25,
+      q: "工具结果",
+      source: "DSH",
+      from: "2026-08-01",
+      to: "2026-08-21",
+      projectId: "project-1",
+      eventKind: "TOOL_RESULT",
+      completeness: "PARTIAL"
+    });
+  });
+
+  it("rejects unsupported source, event kind, reversed dates, and oversized terms", () => {
+    for (const params of [
+      new URLSearchParams({ source: "OTHER" }),
+      new URLSearchParams({ eventKind: "PROMPT" }),
+      new URLSearchParams({ from: "2026-08-22", to: "2026-08-21" }),
+      new URLSearchParams({ q: "x".repeat(501) })
+    ]) {
+      expect(() => parseAgentRunQuery(params)).toThrow(
+        "agent run query"
+      );
+    }
+  });
+});
+
+describe("parseAgentEventQuery", () => {
+  it("round-trips a stable sequence/event cursor", () => {
+    const cursor = encodeAgentEventCursor({
+      sequence: 42,
+      eventId: "a".repeat(64)
+    });
+    expect(parseAgentEventQuery(new URLSearchParams({
+      cursor,
+      pageSize: "50"
+    }))).toEqual({
+      cursor: { sequence: 42, eventId: "a".repeat(64) },
+      pageSize: 50
+    });
+  });
+
+  it("rejects malformed and overlarge cursors", () => {
+    expect(() => parseAgentEventQuery(
+      new URLSearchParams({ cursor: "not-a-cursor" })
+    )).toThrow("event query");
+    expect(() => parseAgentEventQuery(
+      new URLSearchParams({ cursor: "x".repeat(2_001) })
+    )).toThrow("event query");
   });
 });

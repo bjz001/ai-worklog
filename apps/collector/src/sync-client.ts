@@ -40,7 +40,10 @@ function isPrivateIpv4(hostname: string): boolean {
     || (first === 192 && second === 168);
 }
 
-function validatedEndpoint(endpoint: string, allowInsecureLanHttp: boolean): URL {
+export function validatedSyncEndpoint(
+  endpoint: string,
+  allowInsecureLanHttp: boolean
+): URL {
   const url = new URL(endpoint);
   const isLocalHttp = url.protocol === "http:"
     && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1");
@@ -157,7 +160,7 @@ export async function syncPending(options: {
   sleep?: (milliseconds: number) => Promise<void>;
 }): Promise<SyncResult> {
   if (!options.token) throw new Error("Device token is required");
-  const endpoint = validatedEndpoint(
+  const endpoint = validatedSyncEndpoint(
     options.endpoint,
     options.allowInsecureLanHttp === true
   );

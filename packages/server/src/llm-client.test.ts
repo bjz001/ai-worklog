@@ -3,15 +3,22 @@ import { z } from "zod";
 import {
   assertPublicLlmDestination,
   chatCompletionsUrl,
-  requestLlmJson
+  requestLlmJson,
+  serializeLlmJsonRequest
 } from "./llm-client";
 import { createPinnedLlmLookup } from "./llm-network-policy";
+import { DEFAULT_SUMMARY_PROMPTS } from "./summary-prompts";
 
 const settings = {
   provider: "DEEPSEEK" as const,
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-v4-flash",
-  apiKey: "sk-test-only-secret"
+  apiKey: "sk-test-only-secret",
+  summaryPrompts: {
+    daily: DEFAULT_SUMMARY_PROMPTS.daily,
+    weekly: DEFAULT_SUMMARY_PROMPTS.weekly,
+    monthly: DEFAULT_SUMMARY_PROMPTS.monthly
+  }
 };
 
 const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
@@ -107,6 +114,20 @@ describe("LLM destination safety", () => {
 });
 
 describe("requestLlmJson", () => {
+  it("disables DeepSeek thinking mode and reserves enough output for summary JSON", () => {
+    const request = JSON.parse(
+      serializeLlmJsonRequest(settings, [{ role: "user", content: "test" }])
+    ) as Record<string, unknown>;
+
+    expect(request).toMatchObject({
+      model: "deepseek-v4-flash",
+      thinking: { type: "disabled" },
+      max_tokens: 8_192,
+      response_format: { type: "json_object" },
+      stream: false
+    });
+  });
+
   it("posts a bounded JSON request and validates model JSON", async () => {
     const fetcher = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
       expect(init?.redirect).toBe("manual");
@@ -130,6 +151,111 @@ describe("requestLlmJson", () => {
         resolver: publicResolver
       })
     ).resolves.toMatchObject({ data: { ok: true } });
+  });
+
+  it("accepts one complete JSON object wrapped in a Markdown JSON fence", async () => {
+    const fetcher = async () => new Response(
+      JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: "```json\n{\"ok\":true}\n```" }
+        }]
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+
+    await expect(
+      requestLlmJson({
+        settings,
+        messages: [{ role: "user", content: "test" }],
+        schema: z.object({ ok: z.literal(true) }).strict(),
+        fetcher,
+        resolver: publicResolver
+      })
+    ).resolves.toMatchObject({ data: { ok: true } });
+  });
+
+  it("reports truncated and empty model output with actionable error codes", async () => {
+    const truncated = async () => new Response(
+      JSON.stringify({
+        choices: [{
+          finish_reason: "length",
+          message: { content: "{\"ok\":" }
+        }]
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+    await expect(
+      requestLlmJson({
+        settings,
+        messages: [{ role: "user", content: "test" }],
+        schema: z.object({ ok: z.boolean() }),
+        fetcher: truncated,
+        resolver: publicResolver
+      })
+    ).rejects.toMatchObject({ code: "LLM_UPSTREAM_OUTPUT_TRUNCATED" });
+
+    const empty = async () => new Response(
+      JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: null, reasoning_content: "private reasoning" }
+        }]
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+    await expect(
+      requestLlmJson({
+        settings,
+        messages: [{ role: "user", content: "test" }],
+        schema: z.object({ ok: z.boolean() }),
+        fetcher: empty,
+        resolver: publicResolver
+      })
+    ).rejects.toMatchObject({
+      code: "LLM_UPSTREAM_EMPTY_RESPONSE",
+      message: expect.not.stringContaining("private reasoning")
+    });
+  });
+
+  it("distinguishes malformed JSON from a valid JSON object with the wrong shape", async () => {
+    const invalidJson = async () => new Response(
+      JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: "{\"ok\":" }
+        }]
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+    await expect(
+      requestLlmJson({
+        settings,
+        messages: [{ role: "user", content: "test" }],
+        schema: z.object({ ok: z.literal(true) }).strict(),
+        fetcher: invalidJson,
+        resolver: publicResolver
+      })
+    ).rejects.toMatchObject({ code: "LLM_UPSTREAM_INVALID_JSON" });
+
+    const invalidSchema = async () => new Response(
+      JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: "{\"ok\":false}" }
+        }]
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+    await expect(
+      requestLlmJson({
+        settings,
+        messages: [{ role: "user", content: "test" }],
+        schema: z.object({ ok: z.literal(true) }).strict(),
+        fetcher: invalidSchema,
+        resolver: publicResolver
+      })
+    ).rejects.toMatchObject({ code: "LLM_UPSTREAM_INVALID_SCHEMA" });
   });
 
   it.each([

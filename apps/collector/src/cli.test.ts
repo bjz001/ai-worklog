@@ -28,6 +28,51 @@ describe("collector CLI", () => {
     expect(() => parseCommand(["unknown", "fixture-device-token"])).toThrow("Unknown command: unknown");
   });
 
+  it("accepts a v2 source limiter and advances an unchanged-source cursor", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-v2-"));
+    const databasePath = join(directory, "collector.sqlite");
+    const output: string[] = [];
+    const environment = {
+      COLLECTOR_DB_PATH: databasePath,
+      COLLECTOR_BLOB_ROOT: join(directory, "blobs"),
+      AI_WORKLOG_ACCOUNT_ID: "account-1",
+      AI_WORKLOG_DEVICE_ID: "windows-device",
+      CODEX_SOURCE_INSTANCE_ID: "windows-codex",
+      CODEX_SOURCE_PATH: resolve(fixturesRoot, "windows/session.jsonl")
+    };
+
+    expect(parseCommand(["prepare", "--source", "codex"])).toMatchObject({
+      command: "prepare",
+      source: "CODEX"
+    });
+    await runCli(["prepare", "--source=CODEX"], {
+      env: environment,
+      write: (line) => output.push(line)
+    });
+    await runCli(["prepare", "--source=CODEX"], {
+      env: environment,
+      write: (line) => output.push(line)
+    });
+    const outbox = new Outbox(databasePath);
+    const payloads = outbox.listPending(100).map((batch) => batch.payloadJson);
+    outbox.close();
+
+    expect(payloads[0]).toContain('"protocolVersion":2');
+    expect(payloads.join("\n")).toContain("FAKE_TEST_SECRET_CANARY_1234567890");
+    expect(payloads.join("\n")).not.toContain("[REDACTED]");
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
+      protocolVersion: 2,
+      sourceType: "CODEX",
+      scanned: 1,
+      failedFiles: 0
+    });
+    expect(JSON.parse(output[1] ?? "{}")).toMatchObject({
+      scanned: 1,
+      skippedFiles: 1,
+      inserted: 0
+    });
+  });
+
   it("runs both platform fixtures and reports counts without exposing a configured token", async () => {
     const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
     const databasePath = join(directory, "collector.sqlite");
@@ -61,7 +106,13 @@ describe("collector CLI", () => {
     });
 
     expect(output).toEqual([
-      JSON.stringify({ command: "status", pending: 0, acked: 0, total: 0 })
+      JSON.stringify({
+        command: "status",
+        pending: 0,
+        acked: 0,
+        total: 0,
+        pendingBlobs: 0
+      })
     ]);
   });
 
@@ -86,7 +137,11 @@ describe("collector CLI", () => {
         attempted: 0,
         acked: 0,
         failed: 0,
-        remainingPending: 0
+        remainingPending: 0,
+        blobAttempted: 0,
+        blobAcked: 0,
+        blobFailed: 0,
+        remainingPendingBlobs: 0
       })
     ]);
   });
@@ -101,6 +156,7 @@ describe("collector CLI", () => {
         COLLECTOR_DB_PATH: databasePath,
         AI_WORKLOG_ACCOUNT_ID: "account-1",
         AI_WORKLOG_DEVICE_ID: "windows-device",
+        AI_WORKLOG_PROTOCOL_VERSION: "1",
         AI_WORKLOG_SOURCE_TYPE: "CLAUDE_CODE",
         CLAUDE_CODE_SOURCE_INSTANCE_ID: "windows-claude",
         CLAUDE_CODE_SOURCE_PATH: resolve(claudeFixturesRoot, "windows/session.jsonl")
@@ -134,6 +190,7 @@ describe("collector CLI", () => {
         COLLECTOR_DB_PATH: databasePath,
         AI_WORKLOG_ACCOUNT_ID: "account-1",
         AI_WORKLOG_DEVICE_ID: "windows-device",
+        AI_WORKLOG_PROTOCOL_VERSION: "1",
         CODEX_SOURCE_INSTANCE_ID: "windows-codex",
         CODEX_SOURCE_PATH: resolve(fixturesRoot, "windows/session.jsonl")
       },
@@ -155,6 +212,7 @@ describe("collector CLI", () => {
       COLLECTOR_DB_PATH: databasePath,
       AI_WORKLOG_ACCOUNT_ID: "account-1",
       AI_WORKLOG_DEVICE_ID: "windows-device",
+      AI_WORKLOG_PROTOCOL_VERSION: "1",
       CODEX_SOURCE_INSTANCE_ID: "windows-codex",
       CODEX_SOURCE_PATH: resolve(fixturesRoot, "windows/session.jsonl")
     };
@@ -227,6 +285,7 @@ describe("collector CLI", () => {
         COLLECTOR_DB_PATH: databasePath,
         AI_WORKLOG_ACCOUNT_ID: "account-1",
         AI_WORKLOG_DEVICE_ID: "windows-device",
+        AI_WORKLOG_PROTOCOL_VERSION: "1",
         CODEX_SOURCE_INSTANCE_ID: "windows-codex",
         CODEX_SOURCE_PATH: directory
       },

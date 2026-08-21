@@ -1,6 +1,6 @@
 # AI Worklog 每日采集与同步
 
-这套脚本按设备本地时区运行：macOS 每天 18:00、Windows 每天 23:30。每次都按固定顺序执行三步：采集 Codex、采集 Claude Code，最后将本地 Outbox 中的待同步批次以有界批量发送到中央 API。两种本地数据源都使用同一个本机 `AI_WORKLOG_DEVICE_ID`，但使用不同的 source instance 和路径。采集器在写入 Outbox 前脱敏。
+这套脚本按设备本地时区运行：macOS 每天 18:00、Windows 每天 23:30。protocol v2 每次只执行一次 `prepare`，自动探测四类来源（Codex、Claude Code、ZCode、DSH），然后将 Outbox 中的事件与 Blob 以有界批量发送到中央 API。v2 保存来源暴露的原文，不在写入 Outbox 前脱敏；设备 Token 仍不进入轨迹或日志。显式设为 protocol v1 时，调度器保留旧的 Codex → Claude Code 脱敏采集顺序用于回退。
 
 中央服务所在的 Mac 可另外安装一个每天 23:40 的总结 Worker LaunchAgent。该任务永远调用无参数的有界默认模式，最多处理当天与有待处理任务的昨天；它不会自动传入历史回补参数。
 
@@ -15,12 +15,11 @@
 - `AI_WORKLOG_ACCOUNT_ID`：两台机器保持一致。
 - `AI_WORKLOG_DEVICE_ID`：每台机器唯一。
 - 该 ID 必须与中心端 Token 的绑定一致：默认 Seed 中 Mac 为 `device_macos_demo` + `MACOS_DEVICE_TOKEN`，Windows 为 `device_windows_demo` + `WINDOWS_DEVICE_TOKEN`；自定义时使用 `MACOS_DEVICE_ID` / `WINDOWS_DEVICE_ID` 后重新 Seed。
-- `CODEX_SOURCE_INSTANCE_ID`：本机 Codex 数据源的唯一标识。
-- `CODEX_SOURCE_PATH`：本机明确授权的 `.jsonl` 文件或目录的绝对路径。
-- `CLAUDE_CODE_SOURCE_INSTANCE_ID`：本机 Claude Code 数据源的唯一标识，不能与 Codex 的标识相同。
-- `CLAUDE_CODE_SOURCE_PATH`：本机明确授权的 Claude Code `.jsonl` 文件或目录的绝对路径，不能与 Codex 路径相同。
+- `AI_WORKLOG_PROTOCOL_VERSION`：默认 `2`；只有需要回退旧采集器时设为 `1`。
+- `CODEX_SOURCE_*`、`CLAUDE_CODE_SOURCE_*`、`ZCODE_SOURCE_*`/`ZCODE_HOOK_SPOOL`、`DSH_SOURCE_PATH`/`DSH_HOME`：可选覆盖。未设置时使用 `~/.codex/sessions`、`~/.claude/projects`、`~/.ai-worklog/zcode-spool` 和 `$DSH_HOME`/`~/.dsh`。
 - `AI_WORKLOG_PATH_HMAC_KEY`：用于不可逆标识本地路径的随机值。
 - `COLLECTOR_DB_PATH`：本机 SQLite Outbox 绝对路径。
+- `COLLECTOR_BLOB_ROOT`：本机待上传 Blob 的内容寻址缓存目录；默认位于 Outbox 同目录。
 - `AI_WORKLOG_SYNC_URL`：两台机器指向同一个同步端点。
 - `AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP`：仅当中心服务位于可信 RFC1918 私网且使用 HTTP 时设为 `true`；公网地址仍会被拒绝。
 - `AI_WORKLOG_DEVICE_TOKEN`：每台机器独立的令牌。
@@ -189,7 +188,7 @@ AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=true
 & ".\scripts\schedules\windows\Install.ps1" -ConfigPath $Config
 ```
 
-先完成一次真实同步，确认已有 Outbox 批次上传成功，再安装计划任务。Windows 不需要 MySQL、Nginx、证书或 Docker；它只向 Mac 的 HTTP API 上传脱敏后的批次。
+先完成一次真实同步，确认已有 Outbox 批次上传成功，再安装计划任务。Windows 不需要 MySQL、Nginx、证书或 Docker；它只向 Mac 的 API 上传事件批次和后续 Blob。使用局域网 HTTP 时，未脱敏正文和设备 Token 都可能被同网段监听。
 
 该任务以当前用户的有限权限运行，不会请求管理员权限。当 23:30 时用户未登录，任务会在下次可用时尝试执行。安全日志在 `%LOCALAPPDATA%\AIWorklog\logs\schedule.log`。卸载：
 
@@ -202,7 +201,7 @@ AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=true
 
 - 配置校验失败时只输出通用状态，不回显配置行或值。
 - 同一台机器不会并发运行多个采集任务。
-- 每次严格尝试 `CODEX prepare` 一次、`CLAUDE_CODE prepare` 一次、`sync` 一次。单个来源或文件失败不会阻止另一来源，也不会阻止已有 Outbox 的同步。
+- v2 每次严格尝试自动 `prepare` 一次、`sync` 一次；采集中某个文件失败后仍会尝试同步已有 Outbox。v1 才分别调用 Codex 与 Claude Code。
 - 任一阶段失败时，调度最终记录 `partial` 并以非零状态退出。
 - 上传失败的批次保留在本地 Outbox，下次运行继续重试。
 - 移动项目目录、Node.js 路径或配置文件后，需重新执行安装脚本。

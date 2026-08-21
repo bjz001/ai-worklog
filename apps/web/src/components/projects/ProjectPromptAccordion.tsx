@@ -10,7 +10,6 @@ import { LoadingState } from "@/components/ui/PageElements";
 import { StatusChip } from "@/components/ui/StatusChip";
 import {
   formatDateTime,
-  formatNumber,
   formatSource,
   summarizeText
 } from "@/lib/presenters";
@@ -102,8 +101,8 @@ export function ProjectPromptAccordion({
         ) : null}
         <div className="project-prompt-actions">
           <button className="button button--secondary" onClick={onShowProject} type="button">项目详情</button>
-          <Link className="button button--primary" href={`/prompts?projectId=${encodeURIComponent(project.id)}`}>
-            查看全部 {formatNumber(project.promptCount)} 条<Icon name="chevron-right" />
+          <Link className="button button--primary" href={`/runs?projectId=${encodeURIComponent(project.id)}`}>
+            查看 Agent 轨迹<Icon name="chevron-right" />
           </Link>
         </div>
       </div>

@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     default: "AI 工作沉淀台",
     template: "%s · AI 工作沉淀台"
   },
-  description: "跨设备整理 AI Prompt、工作总结与 Skill 沉淀"
+  description: "跨设备采集、搜索与回放 Agent 完整事件轨迹"
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

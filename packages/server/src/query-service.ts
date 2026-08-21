@@ -613,6 +613,7 @@ export async function getSummaryForDate(options: {
     id: row.id,
     workDate: mysqlWorkDate(row.work_date),
     status: row.status === "COMPLETE" ? "complete" : "partial",
+    inputTruncated: content.inputTruncated === true,
     ...summarySections,
     completenessNote:
       typeof content.completenessNote === "string"
@@ -837,8 +838,8 @@ export function getPrivacyResponse(): PrivacyResponse {
   return {
     data: {
       retentionDays: null,
-      redactionVersion: "core-v1",
-      rawContentStored: false,
+      redactionVersion: "v1 core-v1 / v2 RAW",
+      rawContentStored: true,
       exportReady: false,
       pendingDeletionCount: 0
     }

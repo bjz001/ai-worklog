@@ -103,6 +103,38 @@ function invalidResponse(): LlmUpstreamError {
   );
 }
 
+function truncatedOutput(): LlmUpstreamError {
+  return new LlmUpstreamError(
+    "LLM_UPSTREAM_OUTPUT_TRUNCATED",
+    502,
+    "LLM 输出达到长度上限，未生成完整 JSON；请重试或缩短总结 Prompt"
+  );
+}
+
+function emptyOutput(): LlmUpstreamError {
+  return new LlmUpstreamError(
+    "LLM_UPSTREAM_EMPTY_RESPONSE",
+    502,
+    "LLM 未返回可用的总结内容，请重试"
+  );
+}
+
+function invalidJsonOutput(): LlmUpstreamError {
+  return new LlmUpstreamError(
+    "LLM_UPSTREAM_INVALID_JSON",
+    502,
+    "LLM 未返回有效的 JSON 总结"
+  );
+}
+
+function invalidSchemaOutput(): LlmUpstreamError {
+  return new LlmUpstreamError(
+    "LLM_UPSTREAM_INVALID_SCHEMA",
+    502,
+    "LLM 返回的 JSON 不符合总结结构"
+  );
+}
+
 async function boundedResponseText(
   response: Response,
   maxBytes: number,
@@ -155,7 +187,8 @@ const CompletionEnvelopeSchema = z
     choices: z
       .array(
         z.object({
-          message: z.object({ content: z.string() }).passthrough()
+          finish_reason: z.string().nullable().optional(),
+          message: z.object({ content: z.string().nullable() }).passthrough()
         }).passthrough()
       )
       .min(1)
@@ -163,21 +196,24 @@ const CompletionEnvelopeSchema = z
   .passthrough();
 
 export function serializeLlmJsonRequest(
-  settings: Pick<RuntimeLlmSettings, "model">,
+  settings: Pick<RuntimeLlmSettings, "model" | "provider">,
   messages: readonly LlmMessage[]
 ): string {
   return JSON.stringify({
     model: settings.model,
     messages,
     response_format: { type: "json_object" },
+    ...(settings.provider === "DEEPSEEK"
+      ? { thinking: { type: "disabled" } }
+      : {}),
     temperature: 0.2,
-    max_tokens: 4_096,
+    max_tokens: 8_192,
     stream: false
   });
 }
 
 export function llmJsonRequestByteLength(
-  settings: Pick<RuntimeLlmSettings, "model">,
+  settings: Pick<RuntimeLlmSettings, "model" | "provider">,
   messages: readonly LlmMessage[]
 ): number {
   return Buffer.byteLength(serializeLlmJsonRequest(settings, messages), "utf8");
@@ -291,13 +327,28 @@ export async function requestLlmJson<T>(options: {
     throw invalidResponse();
   }
   try {
-    const content = envelope.choices[0]!.message.content;
+    const choice = envelope.choices[0]!;
+    if (choice.finish_reason === "length") throw truncatedOutput();
+    const content = choice.message.content;
+    if (!content?.trim()) throw emptyOutput();
+    const trimmed = content.trim();
+    const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu.exec(
+      trimmed
+    );
+    const json = fenced?.[1]?.trim() ?? trimmed;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      throw invalidJsonOutput();
+    }
     return {
-      data: options.schema.parse(JSON.parse(content)),
+      data: options.schema.parse(parsed),
       latencyMs: Date.now() - startedAt
     };
-  } catch {
-    throw invalidResponse();
+  } catch (error) {
+    if (error instanceof LlmUpstreamError) throw error;
+    throw invalidSchemaOutput();
   }
 }
 

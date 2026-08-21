@@ -53,6 +53,9 @@ export const llmSettings = mysqlTable("llm_settings", {
   baseUrl: varchar("base_url", { length: 512 }).notNull(),
   model: varchar("model", { length: 128 }).notNull(),
   encryptedApiKey: longtext("encrypted_api_key").notNull(),
+  dailySummaryPrompt: text("daily_summary_prompt"),
+  weeklySummaryPrompt: text("weekly_summary_prompt"),
+  monthlySummaryPrompt: text("monthly_summary_prompt"),
   createdAt: createdAt(),
   updatedAt: updatedAt()
 });
@@ -136,7 +139,7 @@ export const syncBatches = mysqlTable(
       }),
     batchId: varchar("batch_id", { length: 128 }).notNull(),
     protocolVersion: int("protocol_version", { unsigned: true }).notNull(),
-    sourceType: mysqlEnum("source_type", ["CODEX", "CLAUDE_CODE"]).notNull(),
+    sourceType: varchar("source_type", { length: 32 }).notNull(),
     sourceInstanceId: varchar("source_instance_id", { length: 128 }).notNull(),
     parserVersion: varchar("parser_version", { length: 64 }).notNull(),
     payloadHash: char("payload_hash", { length: 64 }).notNull(),
@@ -243,25 +246,48 @@ export const sessions = mysqlTable(
       () => projects.id,
       { onDelete: "set null", onUpdate: "cascade" }
     ),
-    sourceType: mysqlEnum("source_type", ["CODEX", "CLAUDE_CODE"]).notNull(),
+    sourceType: varchar("source_type", { length: 32 }).notNull(),
     sourceInstanceId: varchar("source_instance_id", { length: 128 }).notNull(),
-    sourceSessionId: varchar("source_session_id", { length: 255 }).notNull(),
+    sourceSessionId: text("source_session_id").notNull(),
+    sourceSessionKey: char("source_session_key", { length: 64 }).notNull(),
+    runId: char("run_id", { length: 64 }),
     parserVersion: varchar("parser_version", { length: 64 }).notNull(),
     startedAt: datetime("started_at", { fsp: 6, mode: "date" }),
     endedAt: datetime("ended_at", { fsp: 6, mode: "date" }),
+    title: text("title"),
+    cwd: text("cwd"),
+    parentRunId: char("parent_run_id", { length: 64 }),
+    rawCaptureStatus: varchar("raw_capture_status", { length: 32 })
+      .notNull()
+      .default("CAPTURED"),
+    normalizedCoverage: varchar("normalized_coverage", { length: 32 })
+      .notNull()
+      .default("FULL"),
+    attachmentStatus: varchar("attachment_status", { length: 32 })
+      .notNull()
+      .default("NOT_APPLICABLE"),
+    missingReason: text("missing_reason"),
+    agentMetadata: json("agent_metadata")
+      .$type<Record<string, unknown> | null>(),
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
   (table) => [
-    uniqueIndex("uq_sessions_source_identity").on(
+    uniqueIndex("uq_sessions_source_identity_v2").on(
       table.accountId,
       table.sourceType,
       table.sourceInstanceId,
-      table.sourceSessionId
+      table.sourceSessionKey
     ),
+    uniqueIndex("uq_sessions_account_run_id").on(table.accountId, table.runId),
     index("ix_sessions_account_project_started").on(
       table.accountId,
       table.projectId,
+      table.startedAt
+    ),
+    index("ix_sessions_account_source_started").on(
+      table.accountId,
+      table.sourceType,
       table.startedAt
     ),
     index("ix_sessions_device").on(table.deviceId)
@@ -301,15 +327,31 @@ export const collectedEvents = mysqlTable(
       { onDelete: "set null", onUpdate: "cascade" }
     ),
     eventId: char("event_id", { length: 64 }).notNull(),
-    kind: mysqlEnum("kind", ["USER_PROMPT", "VISIBLE_RESULT"]).notNull(),
-    sourceMessageId: varchar("source_message_id", { length: 255 }),
-    messageIndex: int("message_index", { unsigned: true }).notNull(),
+    kind: varchar("kind", { length: 64 }).notNull(),
+    sourceEventId: varchar("source_event_id", { length: 1_024 }),
+    sourceMessageId: varchar("source_message_id", { length: 1_024 }),
+    sequence: bigint("sequence", { mode: "number", unsigned: true }),
+    turnIndex: int("turn_index", { unsigned: true }),
+    stepIndex: int("step_index", { unsigned: true }),
+    messageIndex: bigint("message_index", { mode: "number", unsigned: true }),
     replyToEventId: char("reply_to_event_id", { length: 64 }),
+    mirrorOfEventId: char("mirror_of_event_id", { length: 64 }),
     occurredAt: datetime("occurred_at", { fsp: 6, mode: "date" }).notNull(),
     sourceTimeZone: varchar("source_time_zone", { length: 64 }).notNull(),
-    contentHash: char("content_hash", { length: 64 }).notNull(),
+    contentHash: char("content_hash", { length: 64 }),
+    rawPayloadSha256: char("raw_payload_sha256", { length: 64 }),
+    rawCaptureStatus: varchar("raw_capture_status", { length: 32 })
+      .notNull()
+      .default("CAPTURED"),
+    normalizedCoverage: varchar("normalized_coverage", { length: 32 })
+      .notNull()
+      .default("FULL"),
+    attachmentStatus: varchar("attachment_status", { length: 32 })
+      .notNull()
+      .default("NOT_APPLICABLE"),
+    missingReason: text("missing_reason"),
     currentVersion: int("current_version", { unsigned: true }).notNull().default(1),
-    redactionVersion: varchar("redaction_version", { length: 32 }).notNull(),
+    redactionVersion: varchar("redaction_version", { length: 32 }),
     metadata: json("metadata").$type<Record<string, unknown>>().notNull(),
     createdAt: createdAt()
   },
@@ -328,7 +370,16 @@ export const collectedEvents = mysqlTable(
     ),
     index("ix_collected_events_device").on(table.deviceId),
     index("ix_collected_events_sync_batch").on(table.syncBatchId),
-    index("ix_collected_events_project").on(table.projectId)
+    index("ix_collected_events_project").on(table.projectId),
+    index("ix_collected_events_session_sequence").on(
+      table.sessionId,
+      table.sequence
+    ),
+    index("ix_collected_events_account_kind_occurred").on(
+      table.accountId,
+      table.kind,
+      table.occurredAt
+    )
   ]
 );
 
@@ -366,6 +417,272 @@ export const eventVersions = mysqlTable(
       table.contentHash
     ),
     index("ix_event_versions_account").on(table.accountId)
+  ]
+);
+
+export const agentTextSegments = mysqlTable(
+  "agent_text_segments",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    accountId: varchar("account_id", { length: 64 })
+      .notNull()
+      .references(() => accounts.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    collectedEventId: varchar("collected_event_id", { length: 64 })
+      .notNull()
+      .references(() => collectedEvents.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    segmentId: char("segment_id", { length: 64 }).notNull(),
+    ordinal: bigint("ordinal", { mode: "number", unsigned: true }).notNull(),
+    format: varchar("format", { length: 32 }).notNull(),
+    purpose: varchar("purpose", { length: 64 }).notNull(),
+    contentSha256: char("content_sha256", { length: 64 }).notNull(),
+    byteLength: bigint("byte_length", {
+      mode: "number",
+      unsigned: true
+    }).notNull(),
+    groupSha256: char("group_sha256", { length: 64 }).notNull(),
+    groupByteLength: bigint("group_byte_length", {
+      mode: "number",
+      unsigned: true
+    }).notNull(),
+    groupSegmentCount: bigint("group_segment_count", {
+      mode: "number",
+      unsigned: true
+    }).notNull(),
+    content: longtext("content").notNull(),
+    isSearchable: boolean("is_searchable").notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex("uq_agent_text_segments_account_segment").on(
+      table.accountId,
+      table.segmentId
+    ),
+    index("ix_agent_text_segments_account_event").on(
+      table.accountId,
+      table.collectedEventId
+    ),
+    uniqueIndex("uq_agent_text_segments_event_group_ordinal").on(
+      table.collectedEventId,
+      table.purpose,
+      table.groupSha256,
+      table.ordinal
+    )
+  ]
+);
+
+export const blobObjects = mysqlTable(
+  "blob_objects",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    accountId: varchar("account_id", { length: 64 })
+      .notNull()
+      .references(() => accounts.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    sha256: char("sha256", { length: 64 }).notNull(),
+    byteLength: bigint("byte_length", {
+      mode: "number",
+      unsigned: true
+    }).notNull(),
+    chunkSize: int("chunk_size", { unsigned: true }).notNull(),
+    chunkCount: bigint("chunk_count", {
+      mode: "number",
+      unsigned: true
+    }).notNull(),
+    mediaType: varchar("media_type", { length: 255 }).notNull(),
+    filename: text("filename"),
+    storagePath: text("storage_path").notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("PENDING"),
+    failureReason: text("failure_reason"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    completedAt: datetime("completed_at", { fsp: 6, mode: "date" })
+  },
+  (table) => [
+    uniqueIndex("uq_blob_objects_account_sha256").on(
+      table.accountId,
+      table.sha256
+    ),
+    index("ix_blob_objects_account_status").on(table.accountId, table.status)
+  ]
+);
+
+export const blobChunks = mysqlTable(
+  "blob_chunks",
+  {
+    blobObjectId: varchar("blob_object_id", { length: 64 })
+      .notNull()
+      .references(() => blobObjects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    chunkIndex: bigint("chunk_index", {
+      mode: "number",
+      unsigned: true
+    }).notNull(),
+    byteLength: int("byte_length", { unsigned: true }).notNull(),
+    sha256: char("sha256", { length: 64 }).notNull(),
+    storagePath: text("storage_path").notNull(),
+    receivedAt: datetime("received_at", { fsp: 6, mode: "date" })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP(6)`)
+  },
+  (table) => [
+    primaryKey({
+      name: "pk_blob_chunks",
+      columns: [table.blobObjectId, table.chunkIndex]
+    })
+  ]
+);
+
+export const eventBlobReferences = mysqlTable(
+  "event_blob_references",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    accountId: varchar("account_id", { length: 64 })
+      .notNull()
+      .references(() => accounts.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    sessionId: varchar("session_id", { length: 64 })
+      .notNull()
+      .references(() => sessions.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    collectedEventId: varchar("collected_event_id", { length: 64 }).references(
+      () => collectedEvents.id,
+      { onDelete: "cascade", onUpdate: "cascade" }
+    ),
+    blobObjectId: varchar("blob_object_id", { length: 64 }).references(
+      () => blobObjects.id,
+      { onDelete: "set null", onUpdate: "cascade" }
+    ),
+    referenceId: char("reference_id", { length: 64 }).notNull(),
+    blobSha256: char("blob_sha256", { length: 64 }),
+    purpose: varchar("purpose", { length: 64 }).notNull(),
+    requestedPath: text("requested_path"),
+    realPath: text("real_path"),
+    filename: text("filename"),
+    mediaType: varchar("media_type", { length: 255 }),
+    byteLength: bigint("byte_length", { mode: "number", unsigned: true }),
+    capturedAt: datetime("captured_at", { fsp: 6, mode: "date" }),
+    status: varchar("status", { length: 32 }).notNull(),
+    failureReason: text("failure_reason"),
+    metadata: json("metadata").$type<Record<string, unknown>>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex("uq_event_blob_references_account_reference").on(
+      table.accountId,
+      table.referenceId
+    ),
+    index("ix_event_blob_references_event").on(table.collectedEventId),
+    index("ix_event_blob_references_session_status").on(
+      table.sessionId,
+      table.status
+    ),
+    index("ix_event_blob_references_blob_sha").on(
+      table.accountId,
+      table.blobSha256
+    )
+  ]
+);
+
+export const agentCaptureCompleteness = mysqlTable(
+  "agent_capture_completeness",
+  {
+    sessionId: varchar("session_id", { length: 64 })
+      .primaryKey()
+      .references(() => sessions.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    accountId: varchar("account_id", { length: 64 })
+      .notNull()
+      .references(() => accounts.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    rawCaptureStatus: varchar("raw_capture_status", { length: 32 }).notNull(),
+    normalizedCoverage: varchar("normalized_coverage", {
+      length: 32
+    }).notNull(),
+    attachmentStatus: varchar("attachment_status", { length: 32 }).notNull(),
+    eventCount: bigint("event_count", { mode: "number", unsigned: true })
+      .notNull()
+      .default(0),
+    textSegmentCount: bigint("text_segment_count", {
+      mode: "number",
+      unsigned: true
+    })
+      .notNull()
+      .default(0),
+    pendingBlobCount: bigint("pending_blob_count", {
+      mode: "number",
+      unsigned: true
+    })
+      .notNull()
+      .default(0),
+    missingReasons: json("missing_reasons")
+      .$type<string[]>()
+      .notNull(),
+    assessedAt: datetime("assessed_at", { fsp: 6, mode: "date" })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP(6)`),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    index("ix_agent_capture_completeness_account_status").on(
+      table.accountId,
+      table.rawCaptureStatus,
+      table.attachmentStatus
+    )
+  ]
+);
+
+export const collectorBackfillCursors = mysqlTable(
+  "collector_backfill_cursors",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    accountId: varchar("account_id", { length: 64 })
+      .notNull()
+      .references(() => accounts.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    deviceId: varchar("device_id", { length: 64 })
+      .notNull()
+      .references(() => devices.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade"
+      }),
+    sourceType: varchar("source_type", { length: 32 }).notNull(),
+    sourceInstanceId: varchar("source_instance_id", { length: 128 }).notNull(),
+    cursor: json("cursor").$type<Record<string, unknown>>().notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("ACTIVE"),
+    newestSeenAt: datetime("newest_seen_at", { fsp: 6, mode: "date" }),
+    oldestSeenAt: datetime("oldest_seen_at", { fsp: 6, mode: "date" }),
+    lastError: text("last_error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (table) => [
+    uniqueIndex("uq_collector_backfill_source").on(
+      table.accountId,
+      table.deviceId,
+      table.sourceType,
+      table.sourceInstanceId
+    )
   ]
 );
 
@@ -800,6 +1117,12 @@ export const schema = {
   sessions,
   collectedEvents,
   eventVersions,
+  agentTextSegments,
+  blobObjects,
+  blobChunks,
+  eventBlobReferences,
+  agentCaptureCompleteness,
+  collectorBackfillCursors,
   promptEntries,
   visibleResults,
   dailySummaries,
