@@ -146,7 +146,7 @@ grep -Fq 'AI_WORKLOG_PROTOCOL_VERSION=2' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'ZCODE_HOOK_SPOOL' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'DSH_HOME' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=false' "$SCHEDULE_ROOT/collector.env.example"
-grep -Fq '自动探测四类来源' "$PROJECT_ROOT/README_SCHEDULES.md"
+grep -Fq '四个隔离的 Node 进程' "$PROJECT_ROOT/README_SCHEDULES.md"
 
 if grep -Eq '(^|[[:space:]])source[[:space:]]|eval[[:space:]]' "$SCHEDULE_ROOT/macos/run.sh"; then
   printf 'macOS runner must parse, not execute, its config file\n' >&2

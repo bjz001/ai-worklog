@@ -201,7 +201,7 @@ AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=true
 
 - 配置校验失败时只输出通用状态，不回显配置行或值。
 - 同一台机器不会并发运行多个采集任务。
-- v2 每次严格尝试自动 `prepare` 一次、`sync` 一次；采集中某个文件失败后仍会尝试同步已有 Outbox。v1 才分别调用 Codex 与 Claude Code。
+- v2 每次依次用独立进程准备 Codex、Claude Code、ZCode 和 DSH，再执行一次 `sync`；任一来源失败后仍会继续后续来源并同步已有 Outbox。v1 仅分别调用 Codex 与 Claude Code。
 - 任一阶段失败时，调度最终记录 `partial` 并以非零状态退出。
 - 上传失败的批次保留在本地 Outbox，下次运行继续重试。
 - 移动项目目录、Node.js 路径或配置文件后，需重新执行安装脚本。
