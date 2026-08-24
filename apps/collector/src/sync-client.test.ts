@@ -73,7 +73,12 @@ describe("syncPending", () => {
       filePath: resolve(fixturesRoot, "macos/session.jsonl")
     });
 
-    const observed: Record<string, string | undefined> = {};
+    const observed: Record<string, string | number | undefined> = {};
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+      observed.timeoutMs = milliseconds;
+      return originalTimeout(milliseconds);
+    });
     const server = createServer((request, response) => {
       observed.authorization = request.headers.authorization;
       observed.idempotency = request.headers["idempotency-key"] as string | undefined;
@@ -104,7 +109,8 @@ describe("syncPending", () => {
       expect(observed).toEqual({
         authorization: "Bearer fixture-device-token",
         idempotency: prepared.batchId,
-        digest: prepared.payloadSha256
+        digest: prepared.payloadSha256,
+        timeoutMs: 5 * 60_000
       });
       expect(outbox.status().acked).toBe(1);
     } finally {
@@ -164,6 +170,69 @@ describe("syncPending", () => {
       } finally {
         inspector.close();
       }
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => error ? rejectClose(error) : resolveClose())
+      );
+    }
+  });
+
+  it("stops at the first failed batch so dependent records keep their order", async () => {
+    const outbox = new Outbox(join(
+      mkdtempSync(join(tmpdir(), "collector-sync-order-")),
+      "collector.sqlite"
+    ));
+    openOutboxes.push(outbox);
+    await prepareFile({
+      connector: new CodexConnector({
+        accountId: "account-1",
+        deviceId: "mac-device",
+        sourceInstanceId: "mac-codex"
+      }),
+      outbox,
+      filePath: resolve(fixturesRoot, "macos/session.jsonl")
+    });
+    await prepareFile({
+      connector: new CodexConnector({
+        accountId: "account-1",
+        deviceId: "windows-device",
+        sourceInstanceId: "windows-codex"
+      }),
+      outbox,
+      filePath: resolve(fixturesRoot, "windows/session.jsonl")
+    });
+    let requestCount = 0;
+    const server = createServer((_request, response) => {
+      requestCount += 1;
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        error: {
+          code: "SYNTHETIC_UNAVAILABLE",
+          message: "synthetic test failure",
+          retryable: true,
+          requestId: "synthetic-request-id"
+        }
+      }));
+    });
+    await new Promise<void>((resolveListen) =>
+      server.listen(0, "127.0.0.1", resolveListen)
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server did not bind");
+    }
+
+    try {
+      const result = await syncPending({
+        outbox,
+        endpoint: `http://127.0.0.1:${address.port}/v1/sync/batches`,
+        token: "fixture-device-token",
+        limit: 10
+      });
+
+      expect(result).toEqual({ attempted: 1, acked: 0, failed: 1 });
+      expect(requestCount).toBe(1);
+      expect(outbox.status()).toEqual({ pending: 2, acked: 0, total: 2 });
     } finally {
       await new Promise<void>((resolveClose, rejectClose) =>
         server.close((error) => error ? rejectClose(error) : resolveClose())

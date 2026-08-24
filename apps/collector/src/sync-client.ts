@@ -192,7 +192,7 @@ export async function syncPending(options: {
           token: options.token,
           // Remote MySQL may need more than 15 seconds for a first historical
           // batch while preserving atomic event/version/job writes.
-          timeoutMs: options.timeoutMs ?? 60_000
+          timeoutMs: options.timeoutMs ?? 5 * 60_000
         });
         options.outbox.markAcked(batch.batchId);
         result.acked += 1;
@@ -208,11 +208,12 @@ export async function syncPending(options: {
         }
         options.outbox.recordFailure(batch.batchId, failureCode(error));
         result.failed += 1;
-        // A persistent 429 applies to the device, not just this batch. Once the
-        // bounded retry budget is exhausted, leave later batches untouched for
-        // the next scheduled run instead of multiplying waits by backlog size.
-        if (error instanceof ServerRateLimitError) return result;
-        break;
+        // Outbox rows are dependency ordered: RUN precedes EVENT, which precedes
+        // TEXT_SEGMENT and BLOB_REFERENCE. Sending later rows after any failure
+        // turns one transient error into a cascade of false integrity failures.
+        // Leave the suffix untouched so the next scheduled run resumes at the
+        // first unacknowledged dependency.
+        return result;
       }
     }
   }

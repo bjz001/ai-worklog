@@ -13,8 +13,8 @@ describe("CodexAgentConnector", () => {
       { timestamp: "2026-08-21T00:00:01.000Z", type: "turn_context", payload: { system_prompt: "SYSTEM FULL", tools: [{ name: "bash" }] } },
       { timestamp: "2026-08-21T00:00:02.000Z", type: "response_item", payload: { id: "u1", type: "message", role: "user", content: [{ type: "input_text", text: "api_key=FAKE_SECRET_KEEP" }] } },
       { timestamp: "2026-08-21T00:00:03.000Z", type: "response_item", payload: { id: "r1", type: "reasoning", summary: [{ type: "summary_text", text: "source-exposed reasoning" }] } },
-      { timestamp: "2026-08-21T00:00:04.000Z", type: "response_item", payload: { id: "t1", type: "function_call", name: "bash", arguments: JSON.stringify({ command: `cat '${join(directory, "result.txt")}'` }) } },
-      { timestamp: "2026-08-21T00:00:05.000Z", type: "response_item", payload: { id: "t2", type: "function_call_output", output: "complete tool output" } },
+      { timestamp: "2026-08-21T00:00:04.000Z", type: "response_item", payload: { call_id: "shared-tool-call", type: "function_call", name: "bash", arguments: JSON.stringify({ command: `cat '${join(directory, "result.txt")}'` }) } },
+      { timestamp: "2026-08-21T00:00:05.000Z", type: "response_item", payload: { call_id: "shared-tool-call", type: "function_call_output", output: "complete tool output" } },
       { timestamp: "2026-08-21T00:00:06.000Z", type: "future_record", payload: { future: "preserve unknown" } }
     ];
     writeFileSync(path, records.map((record) => JSON.stringify(record)).join("\n") + "\n");

@@ -256,6 +256,7 @@ export class CodexAgentConnector implements AgentConnector {
       sequence: number;
       envelopeType: string;
     }>();
+    const sourceEventOccurrences = new Map<string, number>();
     for await (const entry of readJsonlRecords(path, "Codex", {
       maxFileBytes: null,
       maxLineBytes: null
@@ -263,6 +264,14 @@ export class CodexAgentConnector implements AgentConnector {
       if (!entry.record) continue;
       const payload = asRecord(entry.record.payload) ?? entry.record;
       const normalized = codexRecord(entry.record, payload, entry.lineNumber);
+      const occurrence = sourceEventOccurrences.get(normalized.sourceEventId) ?? 0;
+      sourceEventOccurrences.set(normalized.sourceEventId, occurrence + 1);
+      // Codex intentionally reuses call_id for a function_call and its
+      // function_call_output. Preserve the first stable identity for v1
+      // compatibility, then deterministically disambiguate later source events.
+      const sourceEventId = occurrence === 0
+        ? normalized.sourceEventId
+        : `${normalized.sourceEventId}:occurrence:${occurrence}:line:${entry.lineNumber}`;
       const rendered = normalized.renderedText ?? normalized.toolArguments ??
         normalized.toolResult;
       const mirrorKey = rendered && ["USER", "ASSISTANT"].includes(normalized.kind)
@@ -280,7 +289,7 @@ export class CodexAgentConnector implements AgentConnector {
         ? priorMirror.eventId
         : undefined;
       const event = builder.addEvent({
-        sourceEventId: normalized.sourceEventId,
+        sourceEventId,
         sequence: entry.lineNumber - 1,
         kind: normalized.kind,
         occurredAt: isoTimestamp(entry.record.timestamp, meta.startedAt),
@@ -303,7 +312,13 @@ export class CodexAgentConnector implements AgentConnector {
         rawCaptureStatus: normalized.rawCaptureStatus,
         normalizedCoverage: normalized.normalizedCoverage,
         missingReason: normalized.missingReason,
-        metadata: normalized.metadata
+        metadata: occurrence === 0
+          ? normalized.metadata
+          : {
+              ...normalized.metadata,
+              repeatedSourceEventId: normalized.sourceEventId,
+              sourceEventOccurrence: occurrence
+            }
       });
       if (mirrorKey) {
         if (mirrorOfEventId) mirrorByText.delete(mirrorKey);
