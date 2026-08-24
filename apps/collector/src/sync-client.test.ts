@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexConnector } from "./codex-connector.js";
 import { Outbox } from "./outbox.js";
 import { prepareFile } from "./prepare.js";
@@ -15,6 +15,7 @@ const fixturesRoot = fileURLToPath(new URL("../../../fixtures/codex/", import.me
 
 afterEach(() => {
   for (const outbox of openOutboxes.splice(0)) outbox.close();
+  vi.restoreAllMocks();
 });
 
 describe("syncPending", () => {
@@ -167,6 +168,41 @@ describe("syncPending", () => {
       await new Promise<void>((resolveClose, rejectClose) =>
         server.close((error) => error ? rejectClose(error) : resolveClose())
       );
+    }
+  });
+
+  it("records transport failures as a safe actionable error code", async () => {
+    const databasePath = join(
+      mkdtempSync(join(tmpdir(), "collector-sync-network-")),
+      "collector.sqlite"
+    );
+    const outbox = new Outbox(databasePath);
+    openOutboxes.push(outbox);
+    await prepareFile({
+      connector: new CodexConnector({
+        accountId: "account-1",
+        deviceId: "windows-device",
+        sourceInstanceId: "windows-codex"
+      }),
+      outbox,
+      filePath: resolve(fixturesRoot, "windows/session.jsonl")
+    });
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
+
+    await expect(syncPending({
+      outbox,
+      endpoint: "http://127.0.0.1:3000/api/v1/sync/batches",
+      token: "fixture-device-token"
+    })).resolves.toEqual({ attempted: 1, acked: 0, failed: 1 });
+
+    const inspector = new Database(databasePath, { readonly: true });
+    try {
+      const row = inspector.prepare(
+        "SELECT last_error_code FROM outbox_batches LIMIT 1"
+      ).get() as { last_error_code: string };
+      expect(row.last_error_code).toBe("NETWORK_ERROR");
+    } finally {
+      inspector.close();
     }
   });
 

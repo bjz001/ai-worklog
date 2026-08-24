@@ -59,6 +59,13 @@ export function validatedSyncEndpoint(
 
 function failureCode(error: unknown): string {
   if (error instanceof Error && /^[A-Z][A-Z0-9_]{2,63}$/.test(error.message)) return error.message;
+  if (
+    error instanceof Error &&
+    (error.name === "TimeoutError" || error.name === "AbortError")
+  ) return "SYNC_TIMEOUT";
+  // Node's fetch reports DNS, refused connections, resets, and similar
+  // transport failures as TypeError without a stable, safe message.
+  if (error instanceof TypeError) return "NETWORK_ERROR";
   return "SYNC_FAILED";
 }
 

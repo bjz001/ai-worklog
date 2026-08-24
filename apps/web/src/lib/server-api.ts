@@ -82,6 +82,14 @@ export function safeErrorCode(error: unknown): string {
 export function apiError(error: unknown, requestId: string): NextResponse {
   const known = knownError(error);
   if (known) {
+    if (known.code === "AGENT_PAYLOAD_INTEGRITY_ERROR") {
+      console.error(JSON.stringify({
+        event: "ai-worklog-sync-integrity",
+        code: known.code,
+        reason: known.message.replace(/[\r\n]/gu, " ").slice(0, 256),
+        requestId
+      }));
+    }
     const response = NextResponse.json(
       {
         error: {
