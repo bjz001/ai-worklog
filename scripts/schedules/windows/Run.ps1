@@ -278,11 +278,11 @@ function Invoke-CollectorPhase {
         [Parameter(Mandatory = $true)][string]$TsxCli,
         [Parameter(Mandatory = $true)][string]$CollectorCli,
         [Parameter(Mandatory = $true)][ValidateSet("prepare", "sync")][string]$Command,
-        [Parameter(Mandatory = $true)][ValidateSet("prepare-agents", "prepare-codex", "prepare-claude-code", "sync")][string]$LogPhase,
+        [Parameter(Mandatory = $true)][ValidateSet("prepare-codex", "prepare-claude-code", "prepare-v2-codex", "prepare-v2-claude-code", "prepare-v2-zcode", "prepare-v2-dsh", "sync")][string]$LogPhase,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SourceType
     )
 
-    if (@("", "CODEX", "CLAUDE_CODE") -notcontains $SourceType) {
+    if (@("", "CODEX", "CLAUDE_CODE", "ZCODE", "DSH") -notcontains $SourceType) {
         throw "Invalid collector source type"
     }
     if ([string]::IsNullOrEmpty($SourceType)) {
@@ -342,8 +342,19 @@ function Invoke-ScheduledCollector {
             if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-claude-code" -SourceType "CLAUDE_CODE")) {
                 $scheduleFailed = $true
             }
-        } elseif (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-agents" -SourceType "")) {
-            $scheduleFailed = $true
+        } else {
+            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-v2-codex" -SourceType "CODEX")) {
+                $scheduleFailed = $true
+            }
+            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-v2-claude-code" -SourceType "CLAUDE_CODE")) {
+                $scheduleFailed = $true
+            }
+            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-v2-zcode" -SourceType "ZCODE")) {
+                $scheduleFailed = $true
+            }
+            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-v2-dsh" -SourceType "DSH")) {
+                $scheduleFailed = $true
+            }
         }
         if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "sync" -LogPhase "sync" -SourceType "")) {
             $scheduleFailed = $true

@@ -298,23 +298,24 @@ async function runSync(
       if (pageResult.failed > 0 || pageResult.attempted === 0) break;
     }
 
-    const remainingPending = outbox.status().pending;
     const blobResult = { attempted: 0, acked: 0, failed: 0 };
-    if (result.failed === 0 && remainingPending === 0) {
-      for (let page = 0; page < 10; page += 1) {
-        const pageResult = await syncPendingBlobs({
-          outbox,
-          endpoint,
-          token,
-          allowInsecureLanHttp: allowInsecureLanHttp(env),
-          limit: 20
-        });
-        blobResult.attempted += pageResult.attempted;
-        blobResult.acked += pageResult.acked;
-        blobResult.failed += pageResult.failed;
-        if (pageResult.failed > 0 || pageResult.attempted === 0) break;
-      }
+    // Blob objects are content-addressed and may arrive before their references.
+    // Upload them independently so one rejected event batch cannot block the
+    // entire attachment backlog.
+    for (let page = 0; page < 10; page += 1) {
+      const pageResult = await syncPendingBlobs({
+        outbox,
+        endpoint,
+        token,
+        allowInsecureLanHttp: allowInsecureLanHttp(env),
+        limit: 20
+      });
+      blobResult.attempted += pageResult.attempted;
+      blobResult.acked += pageResult.acked;
+      blobResult.failed += pageResult.failed;
+      if (pageResult.failed > 0 || pageResult.attempted === 0) break;
     }
+    const remainingPending = outbox.status().pending;
     const remainingPendingBlobs = outbox.pendingBlobCount();
     write(JSON.stringify({
       command: "sync",

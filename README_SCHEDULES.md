@@ -1,6 +1,6 @@
 # AI Worklog 每日采集与同步
 
-这套脚本按设备本地时区运行：macOS 每天 18:00、Windows 每天 23:30。protocol v2 每次只执行一次 `prepare`，自动探测四类来源（Codex、Claude Code、ZCode、DSH），然后将 Outbox 中的事件与 Blob 以有界批量发送到中央 API。v2 保存来源暴露的原文，不在写入 Outbox 前脱敏；设备 Token 仍不进入轨迹或日志。显式设为 protocol v1 时，调度器保留旧的 Codex → Claude Code 脱敏采集顺序用于回退。
+这套脚本按设备本地时区运行：macOS 每天 18:00、Windows 每天 23:30。protocol v2 会用四个隔离的 Node 进程依次自动探测和准备 Codex、Claude Code、ZCode、DSH，每个来源结束后都释放其内存，再将 Outbox 中的事件与 Blob 以有界批量发送到中央 API。Blob 与事件批次独立排程，事件批次失败不再阻塞已缓存 Blob 上传。v2 保存来源暴露的原文，不在写入 Outbox 前脱敏；设备 Token 仍不进入轨迹或日志。显式设为 protocol v1 时，调度器保留旧的 Codex → Claude Code 脱敏采集顺序用于回退。
 
 中央服务所在的 Mac 可另外安装一个每天 23:40 的总结 Worker LaunchAgent。该任务永远调用无参数的有界默认模式，最多处理当天与有待处理任务的昨天；它不会自动传入历史回补参数。
 

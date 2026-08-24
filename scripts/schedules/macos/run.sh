@@ -248,7 +248,10 @@ if [[ "$AI_WORKLOG_PROTOCOL_VERSION" == "1" ]]; then
   run_collector_phase "prepare" "prepare-codex" "CODEX" || schedule_failed=1
   run_collector_phase "prepare" "prepare-claude-code" "CLAUDE_CODE" || schedule_failed=1
 else
-  run_collector_phase "prepare" "prepare-agents" "" || schedule_failed=1
+  run_collector_phase "prepare" "prepare-v2-codex" "CODEX" || schedule_failed=1
+  run_collector_phase "prepare" "prepare-v2-claude-code" "CLAUDE_CODE" || schedule_failed=1
+  run_collector_phase "prepare" "prepare-v2-zcode" "ZCODE" || schedule_failed=1
+  run_collector_phase "prepare" "prepare-v2-dsh" "DSH" || schedule_failed=1
 fi
 run_collector_phase "sync" "sync" "" || schedule_failed=1
 if ((schedule_failed == 0)); then

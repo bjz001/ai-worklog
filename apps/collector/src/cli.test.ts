@@ -5,6 +5,7 @@ import {
   truncateSync,
   writeFileSync
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -251,6 +252,92 @@ describe("collector CLI", () => {
         remainingPending: 1
       });
       expect(output.join("\n")).not.toContain("fixture-device-token");
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => error ? rejectClose(error) : resolveClose())
+      );
+    }
+  });
+
+  it("uploads pending Blobs even when an event batch remains unacknowledged", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-blob-backlog-"));
+    const databasePath = join(directory, "collector.sqlite");
+    const blobPath = join(directory, "attachment.txt");
+    const blobContent = Buffer.from("pending attachment");
+    const blobSha256 = createHash("sha256").update(blobContent).digest("hex");
+    writeFileSync(blobPath, blobContent);
+    const outbox = new Outbox(databasePath);
+    outbox.enqueue({
+      batchId: "a".repeat(64),
+      createdAt: "2026-08-24T00:00:00.000Z",
+      payloadJson: "{}",
+      payloadSha256: createHash("sha256").update("{}").digest("hex")
+    });
+    outbox.enqueueBlob({
+      sha256: blobSha256,
+      localPath: blobPath,
+      byteLength: blobContent.byteLength,
+      mediaType: "text/plain",
+      filename: "attachment.txt"
+    });
+    outbox.close();
+
+    const server = createServer((request, response) => {
+      if (request.method === "POST" && request.url?.endsWith("/batches")) {
+        response.writeHead(422, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          error: {
+            code: "AGENT_PAYLOAD_INTEGRITY_ERROR",
+            message: "synthetic integrity failure",
+            retryable: false,
+            requestId: "request-integrity"
+          }
+        }));
+        return;
+      }
+      if (request.method === "PUT" && request.url?.endsWith(`/blobs/${blobSha256}`)) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          data: {
+            sha256: blobSha256,
+            status: "COMPLETE",
+            chunkSize: 1024 * 1024,
+            chunkCount: 1,
+            receivedChunks: [0]
+          }
+        }));
+        return;
+      }
+      response.writeHead(404).end();
+    });
+    await new Promise<void>((resolveListen) =>
+      server.listen(0, "127.0.0.1", resolveListen)
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const output: string[] = [];
+
+    try {
+      await expect(runCli(["sync"], {
+        env: {
+          COLLECTOR_DB_PATH: databasePath,
+          AI_WORKLOG_SYNC_URL: `http://127.0.0.1:${address.port}/api/v1/sync/batches`,
+          AI_WORKLOG_DEVICE_TOKEN: "fixture-device-token"
+        },
+        write: (line) => output.push(line)
+      })).rejects.toThrow("SYNC_INCOMPLETE");
+
+      const inspected = new Outbox(databasePath);
+      expect(inspected.status().pending).toBe(1);
+      expect(inspected.pendingBlobCount()).toBe(0);
+      inspected.close();
+      expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
+        failed: 1,
+        remainingPending: 1,
+        blobAttempted: 1,
+        blobAcked: 1,
+        remainingPendingBlobs: 0
+      });
     } finally {
       await new Promise<void>((resolveClose, rejectClose) =>
         server.close((error) => error ? rejectClose(error) : resolveClose())

@@ -117,9 +117,12 @@ grep -Fq '"AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP"' "$windows_runner"
 grep -Fq '"NODE_EXTRA_CA_CERTS"' "$windows_runner"
 grep -Fq 'Test-PrivateIPv4' "$windows_runner"
 windows_phase_patterns=(
-  '-LogPhase "prepare-agents" -SourceType ""'
   '-LogPhase "prepare-codex" -SourceType "CODEX"'
   '-LogPhase "prepare-claude-code" -SourceType "CLAUDE_CODE"'
+  '-LogPhase "prepare-v2-codex" -SourceType "CODEX"'
+  '-LogPhase "prepare-v2-claude-code" -SourceType "CLAUDE_CODE"'
+  '-LogPhase "prepare-v2-zcode" -SourceType "ZCODE"'
+  '-LogPhase "prepare-v2-dsh" -SourceType "DSH"'
   '-LogPhase "sync" -SourceType ""'
 )
 for pattern in "${windows_phase_patterns[@]}"; do
@@ -248,10 +251,12 @@ run_output="$(HOME="$temporary_directory/home" \
   printf 'scheduled run exposed the device token\n' >&2
   exit 1
 }
-[[ "$run_output" == *'"phase":"prepare-agents","status":"ok"'* ]] || {
-  printf 'scheduled run did not auto-discover Agent sources with a reusable lock file\n' >&2
-  exit 1
-}
+for phase in prepare-v2-codex prepare-v2-claude-code prepare-v2-zcode prepare-v2-dsh; do
+  [[ "$run_output" == *"\"phase\":\"$phase\",\"status\":\"ok\""* ]] || {
+    printf 'scheduled run did not isolate protocol v2 Agent source processes\n' >&2
+    exit 1
+  }
+done
 [[ "$run_output" == *'"phase":"sync","status":"ok"'* ]] || {
   printf 'scheduled run did not sync after preparing\n' >&2
   exit 1
@@ -264,7 +269,7 @@ run_output="$(HOME="$temporary_directory/home" \
   printf 'scheduled run did not preserve its reusable lock file\n' >&2
   exit 1
 }
-expected_calls=$'unset:prepare\nunset:sync'
+expected_calls=$'CODEX:prepare\nCLAUDE_CODE:prepare\nZCODE:prepare\nDSH:prepare\nunset:sync'
 actual_calls="$(cat "$capture_path")"
 [[ "$actual_calls" == "$expected_calls" ]] || {
   printf 'collector phases did not run exactly once in auto-prepare, sync order\n' >&2
@@ -324,7 +329,8 @@ partial_calls="$(cat "$capture_path")"
   printf 'a failed auto-prepare prevented Outbox sync\n' >&2
   exit 1
 }
-grep -q '"phase":"prepare-agents","status":"failed"' "$temporary_directory/partial.out"
+grep -q '"phase":"prepare-v2-codex","status":"failed"' "$temporary_directory/partial.out"
+grep -q '"phase":"prepare-v2-dsh","status":"failed"' "$temporary_directory/partial.out"
 grep -q '"phase":"sync","status":"ok"' "$temporary_directory/partial.out"
 grep -q '"phase":"schedule","status":"partial"' "$temporary_directory/partial.out"
 
