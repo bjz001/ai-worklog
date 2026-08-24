@@ -357,6 +357,7 @@ async function upsertRun(options: {
         normalized_coverage, attachment_status, missing_reason, agent_metadata)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
+       run_id = COALESCE(run_id, VALUES(run_id)),
        parser_version = VALUES(parser_version),
        project_id = COALESCE(project_id, VALUES(project_id)),
        started_at = LEAST(COALESCE(started_at, VALUES(started_at)), VALUES(started_at)),

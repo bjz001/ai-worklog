@@ -185,6 +185,48 @@ describe("orderedAgentRecords", () => {
 });
 
 describe("persistAgentSyncRecords", () => {
+  it("backfills run identity when a protocol v2 run upgrades a legacy session", async () => {
+    const payload = validBatch();
+    payload.records = payload.records.filter((record) => record.recordType === "RUN");
+    let storedRunId: string | null = null;
+    const execute = vi.fn(async (sql: unknown, parameters?: unknown[]) => {
+      const statement = String(sql);
+      if (statement.includes("INSERT INTO sessions")) {
+        if (statement.includes("run_id = COALESCE(run_id, VALUES(run_id))")) {
+          storedRunId = String(parameters?.[8]);
+        }
+        return [{ affectedRows: 2 }, []];
+      }
+      if (statement.includes("FROM sessions") && statement.includes("run_id")) {
+        return storedRunId === runId
+          ? [[{
+              id: sessionDatabaseId,
+              account_id: identity.accountId,
+              device_id: identity.deviceId,
+              project_id: null,
+              run_id: runId,
+              source_type: source.type,
+              source_instance_id: source.instanceId,
+              source_session_id: sourceSessionId
+            }], []]
+          : [[], []];
+      }
+      return [{ affectedRows: 1 }, []];
+    });
+
+    await expect(persistAgentSyncRecords({
+      connection: { execute } as never,
+      identity,
+      payload,
+      batchDatabaseId: "batch-db"
+    })).resolves.toEqual({
+      insertedCount: 0,
+      duplicateCount: 0,
+      changedCount: 1
+    });
+    expect(storedRunId).toBe(runId);
+  });
+
   it("rejects an event-only follow-up whose deterministic identity is forged", async () => {
     const payload = validBatch();
     const event = payload.records.find((record) => record.recordType === "EVENT");
