@@ -13,4 +13,8 @@ export interface PromptConnector {
   readonly sourceInstanceId: string;
 
   readFile(filePath: string): Promise<NormalizedPromptSession>;
+  readFileSessions?(
+    filePath: string,
+    onSession: (session: NormalizedPromptSession) => Promise<void>
+  ): Promise<void>;
 }

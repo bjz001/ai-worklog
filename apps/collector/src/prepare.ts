@@ -76,12 +76,12 @@ function buildBatch(
   };
 }
 
-export async function prepareFile(options: {
+function prepareSession(options: {
   connector: PromptConnector;
   outbox: Outbox;
-  filePath: string;
-}): Promise<PrepareResult> {
-  const session = await options.connector.readFile(options.filePath);
+  session: { events: SyncEvent[] };
+}): PrepareResult {
+  const session = options.session;
   if (session.events.length === 0) {
     return {
       batchId: null,
@@ -149,4 +149,41 @@ export async function prepareFile(options: {
     batchCount: preparedBatches.length,
     insertedCount
   };
+}
+
+export async function prepareFile(options: {
+  connector: PromptConnector;
+  outbox: Outbox;
+  filePath: string;
+}): Promise<PrepareResult> {
+  if (!options.connector.readFileSessions) {
+    return prepareSession({
+      connector: options.connector,
+      outbox: options.outbox,
+      session: await options.connector.readFile(options.filePath)
+    });
+  }
+
+  const totals: PrepareResult = {
+    batchId: null,
+    payloadSha256: null,
+    eventCount: 0,
+    inserted: false,
+    batchCount: 0,
+    insertedCount: 0
+  };
+  await options.connector.readFileSessions(options.filePath, async (session) => {
+    const result = prepareSession({
+      connector: options.connector,
+      outbox: options.outbox,
+      session
+    });
+    totals.batchId ??= result.batchId;
+    totals.payloadSha256 ??= result.payloadSha256;
+    totals.eventCount += result.eventCount;
+    totals.inserted ||= result.inserted;
+    totals.batchCount += result.batchCount;
+    totals.insertedCount += result.insertedCount;
+  });
+  return totals;
 }

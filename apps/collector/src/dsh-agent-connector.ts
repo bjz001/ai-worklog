@@ -8,8 +8,9 @@ import JsonlSessionPersistence from "@deepseek-ai/dsh-session-persistence-jsonl"
 import SqliteSessionPersistence from "@deepseek-ai/dsh-session-persistence-sqlite";
 import { lstat, readdir } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import type { AgentEventKind } from "@ai-worklog/contracts";
+import type { AgentEventKind, SyncEvent } from "@ai-worklog/contracts";
 import {
+  buildEventId,
   buildAgentEventId,
   buildAgentRunId,
   sha256Hex
@@ -58,6 +59,10 @@ export interface DshDecodedSession {
 
 export interface DshSessionDecoder {
   inspect(path: string): Promise<DshDecodedSession[]>;
+  inspectEach?(
+    path: string,
+    onSession: (session: DshDecodedSession) => Promise<void>
+  ): Promise<void>;
 }
 
 function boundedSourceSessionId(value: string): string {
@@ -90,30 +95,46 @@ function jsonlRootFromArtifact(path: string): string {
 
 class OfficialDshSessionDecoder implements DshSessionDecoder {
   async inspect(path: string): Promise<DshDecodedSession[]> {
+    const decoded: DshDecodedSession[] = [];
+    await this.inspectEach(path, async (session) => {
+      decoded.push(session);
+    });
+    return decoded;
+  }
+
+  async inspectEach(
+    path: string,
+    onSession: (session: DshDecodedSession) => Promise<void>
+  ): Promise<void> {
     const source = await lstat(path);
     if (source.isSymbolicLink()) throw new Error("DSH source symlinks are not allowed");
     if (source.isFile()) {
       const lower = path.toLowerCase();
       if ([".db", ".sqlite", ".sqlite3"].includes(extname(lower))) {
-        return this.inspectSqlite(resolve(path));
+        await this.inspectSqliteEach(resolve(path), onSession);
+        return;
       }
       if (lower.endsWith(".jsonl") || lower.endsWith(".jsonl.zstd")) {
-        return this.inspectJsonl(jsonlRootFromArtifact(path));
+        await this.inspectJsonlEach(jsonlRootFromArtifact(path), onSession);
+        return;
       }
       throw new Error("Unsupported DSH persistence artifact");
     }
     if (!source.isDirectory()) throw new Error("DSH source is not a file or directory");
-    return this.inspectJsonl(resolve(path));
+    await this.inspectJsonlEach(resolve(path), onSession);
   }
 
-  private async inspectJsonl(root: string): Promise<DshDecodedSession[]> {
+  private async inspectJsonlEach(
+    root: string,
+    onSession: (session: DshDecodedSession) => Promise<void>
+  ): Promise<void> {
     const files = await allFiles(root);
     const hasZstd = files.some((path) => path.toLowerCase().endsWith("session.jsonl.zstd"));
     const hasPlain = files.some((path) => path.toLowerCase().endsWith("session.jsonl"));
     if (hasZstd && hasPlain) {
       throw new Error("DSH JSONL root mixes plaintext and zstd encodings");
     }
-    if (!hasZstd && !hasPlain) return [];
+    if (!hasZstd && !hasPlain) return;
     const ctx = new Context();
     await ctx.plugin(SessionStore);
     await ctx.plugin(JsonlSessionPersistence, {
@@ -122,37 +143,36 @@ class OfficialDshSessionDecoder implements DshSessionDecoder {
     });
     try {
       const headers = await ctx.sessionPersistence.list();
-      const decoded: DshDecodedSession[] = [];
       for (const header of headers) {
         const inspection = await ctx.sessionPersistence.inspect(header.id);
-        decoded.push({
+        await onSession({
           meta: inspection.meta,
           events: inspection.events as readonly SessionEvent[] as readonly DshLogicalEvent[],
           artifactPath: ctx.sessionPersistence.locate(inspection.meta)?.path
         });
       }
-      return decoded;
     } finally {
       await ctx.fiber.dispose();
     }
   }
 
-  private async inspectSqlite(path: string): Promise<DshDecodedSession[]> {
+  private async inspectSqliteEach(
+    path: string,
+    onSession: (session: DshDecodedSession) => Promise<void>
+  ): Promise<void> {
     const ctx = new Context();
     await ctx.plugin(SessionStore);
     await ctx.plugin(SqliteSessionPersistence, { path });
     try {
       const headers = await ctx.sessionPersistence.list();
-      const decoded: DshDecodedSession[] = [];
       for (const header of headers) {
         const inspection = await ctx.sessionPersistence.inspect(header.id);
-        decoded.push({
+        await onSession({
           meta: inspection.meta,
           events: inspection.events as readonly SessionEvent[] as readonly DshLogicalEvent[],
           artifactPath: path
         });
       }
-      return decoded;
     } finally {
       await ctx.fiber.dispose();
     }
@@ -323,9 +343,18 @@ export class DshAgentConnector implements AgentConnector {
   }
 
   async readSource(path: string): Promise<AgentCapture[]> {
-    const sessions = await this.decoder.inspect(path);
     const captures: AgentCapture[] = [];
-    for (const session of sessions) {
+    await this.readSourceEach(path, async (capture) => {
+      captures.push(capture);
+    });
+    return captures;
+  }
+
+  async readSourceEach(
+    path: string,
+    onCapture: (capture: AgentCapture) => Promise<void>
+  ): Promise<void> {
+    const visit = async (session: DshDecodedSession): Promise<void> => {
       const sourceSessionId = String(session.meta.id);
       const safeSessionId = boundedSourceSessionId(sourceSessionId);
       const startedAt = new Date(session.meta.createdAt).toISOString();
@@ -454,9 +483,72 @@ export class DshAgentConnector implements AgentConnector {
           });
         }
       }
-      captures.push(builder.finish());
+      await onCapture(builder.finish());
+    };
+    if (this.decoder.inspectEach) {
+      await this.decoder.inspectEach(path, visit);
+      return;
     }
-    return captures;
+    for (const session of await this.decoder.inspect(path)) {
+      await visit(session);
+    }
+  }
+
+  async readPromptSourceEach(
+    path: string,
+    onSession: (session: { sessionId: string; events: SyncEvent[] }) => Promise<void>
+  ): Promise<void> {
+    const visit = async (session: DshDecodedSession): Promise<void> => {
+      const sourceSessionId = String(session.meta.id);
+      const safeSessionId = boundedSourceSessionId(sourceSessionId);
+      const hint = await projectHint({
+        cwd: session.meta.cwd,
+        accountId: this.options.accountId,
+        deviceId: this.options.deviceId,
+        pathHmacKey: this.options.pathHmacKey
+      });
+      const events: SyncEvent[] = [];
+      let messageIndex = 0;
+      for (const sourceEvent of session.events) {
+        if (sourceEvent.type !== "user/message" && sourceEvent.type !== "steering/message") {
+          continue;
+        }
+        const normalized = normalizeDshEvent(sourceEvent);
+        if (!normalized.renderedText) continue;
+        const sourceMessage = `seq:${sourceEvent.seq}`;
+        events.push({
+          eventId: buildEventId({
+            accountId: this.options.accountId,
+            deviceId: this.options.deviceId,
+            sourceType: this.sourceType,
+            sourceInstanceId: this.sourceInstanceId,
+            sourceSessionId: safeSessionId,
+            sourceMessageId: sourceMessage,
+            messageIndex
+          }),
+          kind: "USER_PROMPT",
+          sourceSessionId: safeSessionId,
+          sourceMessageId: sourceMessage,
+          messageIndex,
+          occurredAt: new Date(sourceEvent.time).toISOString(),
+          sourceTimeZone: "UTC",
+          sanitizedContent: normalized.renderedText,
+          contentHash: sha256Hex(normalized.renderedText),
+          redactionVersion: "RAW_V1",
+          ...(hint ? { projectHint: hint } : {}),
+          metadata: {}
+        });
+        messageIndex += 1;
+      }
+      await onSession({ sessionId: safeSessionId, events });
+    };
+    if (this.decoder.inspectEach) {
+      await this.decoder.inspectEach(path, visit);
+      return;
+    }
+    for (const session of await this.decoder.inspect(path)) {
+      await visit(session);
+    }
   }
 }
 

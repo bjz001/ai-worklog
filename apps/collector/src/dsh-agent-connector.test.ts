@@ -162,4 +162,87 @@ describe("DshAgentConnector", () => {
       })
     );
   });
+
+  it("streams decoded sessions through a callback without collecting all captures", async () => {
+    const delivered: string[] = [];
+    const connector = new DshAgentConnector({
+      accountId: "account-1",
+      deviceId: "device-1",
+      sourceInstanceId: "dsh-device-1",
+      decoder: {
+        async inspect() {
+          throw new Error("streaming path should not call inspect");
+        },
+        async inspectEach(_path, onSession) {
+          for (const id of ["first-session", "second-session"]) {
+            await onSession({
+              meta: { version: 0, id, createdAt: 1_000 },
+              events: []
+            });
+          }
+        }
+      }
+    });
+
+    await connector.readSourceEach("/tmp/synthetic", async (capture) => {
+      delivered.push(capture.sourceSessionId);
+    });
+
+    expect(delivered).toEqual(["first-session", "second-session"]);
+  });
+
+  it("extracts Prompt-only DSH sessions without constructing full Agent records", async () => {
+    const connector = new DshAgentConnector({
+      accountId: "account-1",
+      deviceId: "device-1",
+      sourceInstanceId: "dsh-device-1",
+      decoder: {
+        async inspect() {
+          throw new Error("prompt streaming path should not call inspect");
+        },
+        async inspectEach(_path, onSession) {
+          await onSession({
+            meta: {
+              version: 0,
+              id: "prompt-session",
+              createdAt: 1_000,
+              cwd: "/tmp/dsh-project"
+            },
+            events: [
+              {
+                type: "request/header",
+                seq: 0,
+                time: 1_001,
+                data: { system: "must not be materialized" }
+              },
+              {
+                type: "user/message",
+                seq: 1,
+                time: 1_002,
+                data: { text: "保留这个 Prompt" }
+              }
+            ]
+          });
+        }
+      }
+    });
+    const sessions: Array<{ sessionId: string; events: unknown[] }> = [];
+
+    await connector.readPromptSourceEach("/tmp/synthetic", async (session) => {
+      sessions.push(session);
+    });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      sessionId: "prompt-session",
+      events: [
+        expect.objectContaining({
+          kind: "USER_PROMPT",
+          sanitizedContent: "保留这个 Prompt",
+          sourceSessionId: "prompt-session",
+          messageIndex: 0
+        })
+      ]
+    });
+  });
 });

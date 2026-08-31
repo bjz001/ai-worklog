@@ -6,7 +6,8 @@ import {
   type AgentSyncRecord,
   type AttachmentStatus,
   type NormalizedCoverage,
-  type RawCaptureStatus
+  type RawCaptureStatus,
+  type SyncEvent
 } from "@ai-worklog/contracts";
 import {
   buildAgentEventId,
@@ -46,6 +47,14 @@ export interface AgentConnector {
   readonly sourceInstanceId: string;
   readonly parserVersion: string;
   readSource(path: string): Promise<AgentCapture[]>;
+  readSourceEach?(
+    path: string,
+    onCapture: (capture: AgentCapture) => Promise<void>
+  ): Promise<void>;
+  readPromptSourceEach?(
+    path: string,
+    onSession: (session: { sessionId: string; events: SyncEvent[] }) => Promise<void>
+  ): Promise<void>;
 }
 
 interface BuilderOptions extends AgentConnectorIdentity {

@@ -133,4 +133,55 @@ describe("AgentPromptConnector", () => {
     });
     expect(JSON.stringify(session)).not.toContain("FULL SYSTEM CONTEXT");
   });
+
+  it("forwards streamed captures one session at a time", async () => {
+    const source: AgentConnector = {
+      sourceType: "ZCODE",
+      sourceInstanceId: "zcode-device-1",
+      parserVersion: "zcode-hook-spool-v1",
+      readSource: async () => [],
+      readSourceEach: async (_path, onCapture) => {
+        await onCapture(capture());
+        await onCapture({
+          ...capture(),
+          sourceSessionId: "z-session-2"
+        });
+      }
+    };
+    const sessions: string[] = [];
+
+    await new AgentPromptConnector({ connector: source }).readFileSessions(
+      "/tmp/events.jsonl",
+      async (session) => {
+        sessions.push(session.events[0]?.sourceSessionId ?? "");
+      }
+    );
+
+    expect(sessions).toEqual(["z-session-1", "z-session-2"]);
+  });
+
+  it("prefers a prompt-only stream over materializing full captures", async () => {
+    const source: AgentConnector = {
+      sourceType: "DSH",
+      sourceInstanceId: "windows-dsh",
+      parserVersion: "dsh-official-session-v1-prompt-v1",
+      readSource: async () => [],
+      readSourceEach: async () => {
+        throw new Error("full capture path should not be used");
+      },
+      readPromptSourceEach: async (_path, onSession) => {
+        await onSession({ sessionId: "dsh-session-1", events: [] });
+      }
+    };
+    const sessions: string[] = [];
+
+    await new AgentPromptConnector({ connector: source }).readFileSessions(
+      "/tmp/dsh",
+      async (session) => {
+        sessions.push(session.sessionId);
+      }
+    );
+
+    expect(sessions).toEqual(["dsh-session-1"]);
+  });
 });

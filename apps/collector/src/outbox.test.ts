@@ -8,6 +8,7 @@ import { sha256Hex } from "@ai-worklog/core";
 import { CodexConnector } from "./codex-connector.js";
 import { Outbox } from "./outbox.js";
 import { prepareFile } from "./prepare.js";
+import type { PromptConnector } from "./prompt-connector.js";
 
 const openOutboxes: Outbox[] = [];
 const fixturesRoot = fileURLToPath(new URL("../../../fixtures/codex/", import.meta.url));
@@ -204,6 +205,54 @@ describe("Outbox", () => {
     const result = await prepareFile({ connector, outbox, filePath: sourcePath });
 
     expect(result).toMatchObject({ eventCount: 201, batchCount: 2, insertedCount: 2 });
+    expect(outbox.status()).toEqual({ pending: 2, acked: 0, total: 2 });
+  });
+
+  it("prepares streamed sessions independently instead of collecting one source", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-outbox-stream-"));
+    const outbox = new Outbox(join(directory, "collector.sqlite"));
+    openOutboxes.push(outbox);
+    const event = (sessionId: string, index: number) => {
+      const content = `Prompt ${sessionId}`;
+      return {
+        eventId: sha256Hex(`${sessionId}:${index}`),
+        kind: "USER_PROMPT" as const,
+        sourceSessionId: sessionId,
+        sourceMessageId: `message-${index}`,
+        messageIndex: index,
+        occurredAt: `2026-07-14T00:0${index}:00.000Z`,
+        sourceTimeZone: "UTC",
+        sanitizedContent: content,
+        contentHash: sha256Hex(content),
+        redactionVersion: "RAW_V1",
+        metadata: {}
+      };
+    };
+    const connector: PromptConnector = {
+      sourceType: "DSH",
+      sourceInstanceId: "windows-dsh",
+      parserVersion: "dsh-official-session-v1-prompt-v1",
+      readFile: async () => {
+        throw new Error("streaming path should not call readFile");
+      },
+      readFileSessions: async (_path, onSession) => {
+        await onSession({ sessionId: "session-1", events: [event("session-1", 0)] });
+        await onSession({ sessionId: "session-2", events: [event("session-2", 1)] });
+      }
+    };
+
+    const result = await prepareFile({
+      connector,
+      outbox,
+      filePath: "/tmp/dsh"
+    });
+
+    expect(result).toMatchObject({
+      eventCount: 2,
+      batchCount: 2,
+      insertedCount: 2,
+      inserted: true
+    });
     expect(outbox.status()).toEqual({ pending: 2, acked: 0, total: 2 });
   });
 

@@ -29,6 +29,47 @@ function sourceMessageId(event: AgentEventRecord): string {
   return `sha256:${sha256Hex(event.sourceEventId)}`;
 }
 
+function normalizeCapture(capture: AgentCapture): NormalizedPromptSession {
+  const run = capture.records.find((record) => record.recordType === "RUN");
+  const projectHint = run?.recordType === "RUN" ? run.projectHint : undefined;
+  const events: SyncEvent[] = [];
+  let messageIndex = 0;
+  for (const record of capture.records) {
+    if (record.recordType !== "EVENT" || record.kind !== "USER") continue;
+    const content = promptText(capture.records, record.eventId);
+    if (!content) continue;
+    const sourceMessage = sourceMessageId(record);
+    events.push({
+      eventId: buildEventId({
+        accountId: capture.accountId,
+        deviceId: capture.deviceId,
+        sourceType: capture.sourceType,
+        sourceInstanceId: capture.sourceInstanceId,
+        sourceSessionId: capture.sourceSessionId,
+        sourceMessageId: sourceMessage,
+        messageIndex
+      }),
+      kind: "USER_PROMPT",
+      sourceSessionId: capture.sourceSessionId,
+      sourceMessageId: sourceMessage,
+      messageIndex,
+      occurredAt: record.occurredAt,
+      sourceTimeZone: record.sourceTimeZone,
+      sanitizedContent: content,
+      contentHash: sha256Hex(content),
+      redactionVersion: "RAW_V1",
+      ...(projectHint ? { projectHint } : {}),
+      metadata: {}
+    });
+    messageIndex += 1;
+  }
+  events.sort((left, right) =>
+    left.occurredAt.localeCompare(right.occurredAt) ||
+    left.eventId.localeCompare(right.eventId)
+  );
+  return { sessionId: capture.sourceSessionId, events };
+}
+
 export class AgentPromptConnector implements PromptConnector {
   readonly sourceType: AgentCapture["sourceType"];
   readonly sourceInstanceId: string;
@@ -44,43 +85,8 @@ export class AgentPromptConnector implements PromptConnector {
 
   async readFile(filePath: string): Promise<NormalizedPromptSession> {
     const captures = await this.connector.readSource(filePath);
-    const events: SyncEvent[] = [];
-
-    for (const capture of captures) {
-      const run = capture.records.find((record) => record.recordType === "RUN");
-      const projectHint = run?.recordType === "RUN" ? run.projectHint : undefined;
-      let messageIndex = 0;
-      for (const record of capture.records) {
-        if (record.recordType !== "EVENT" || record.kind !== "USER") continue;
-        const content = promptText(capture.records, record.eventId);
-        if (!content) continue;
-        const sourceMessage = sourceMessageId(record);
-        events.push({
-          eventId: buildEventId({
-            accountId: capture.accountId,
-            deviceId: capture.deviceId,
-            sourceType: capture.sourceType,
-            sourceInstanceId: capture.sourceInstanceId,
-            sourceSessionId: capture.sourceSessionId,
-            sourceMessageId: sourceMessage,
-            messageIndex
-          }),
-          kind: "USER_PROMPT",
-          sourceSessionId: capture.sourceSessionId,
-          sourceMessageId: sourceMessage,
-          messageIndex,
-          occurredAt: record.occurredAt,
-          sourceTimeZone: record.sourceTimeZone,
-          sanitizedContent: content,
-          contentHash: sha256Hex(content),
-          redactionVersion: "RAW_V1",
-          ...(projectHint ? { projectHint } : {}),
-          metadata: {}
-        });
-        messageIndex += 1;
-      }
-    }
-
+    const normalized = captures.map(normalizeCapture);
+    const events = normalized.flatMap((session) => session.events);
     events.sort((left, right) =>
       left.occurredAt.localeCompare(right.occurredAt) ||
       left.eventId.localeCompare(right.eventId)
@@ -91,5 +97,22 @@ export class AgentPromptConnector implements PromptConnector {
         : `source:${sha256Hex(filePath)}`,
       events
     };
+  }
+
+  async readFileSessions(
+    filePath: string,
+    onSession: (session: NormalizedPromptSession) => Promise<void>
+  ): Promise<void> {
+    if (this.connector.readPromptSourceEach) {
+      await this.connector.readPromptSourceEach(filePath, onSession);
+      return;
+    }
+    if (!this.connector.readSourceEach) {
+      await onSession(await this.readFile(filePath));
+      return;
+    }
+    await this.connector.readSourceEach(filePath, async (capture) => {
+      await onSession(normalizeCapture(capture));
+    });
   }
 }
