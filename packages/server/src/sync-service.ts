@@ -1089,6 +1089,60 @@ async function ensureSession(options: {
     options.event.sourceSessionId
   );
   const occurredAt = new Date(options.event.occurredAt);
+
+  // Prompt-only agent connectors still know the project from their RUN
+  // record. If an earlier import created this session as unclassified, allow
+  // a later parser run with a real hint to promote the whole session. Manual
+  // project assignments remain authoritative.
+  if (options.event.projectHint) {
+    const [existingRows] = await options.connection.execute<Array<RowDataPacket & {
+      project_id: string | null;
+      classification_source: string | null;
+      is_manual_override: number | boolean | null;
+    }>>(
+      `SELECT s.project_id, p.classification_source, p.is_manual_override
+         FROM sessions s
+         LEFT JOIN projects p
+           ON p.id = s.project_id AND p.account_id = s.account_id
+        WHERE s.id = ? AND s.account_id = ?
+        FOR UPDATE`,
+      [sessionId, options.accountId]
+    );
+    const existing = existingRows[0];
+    if (
+      existing?.project_id &&
+      existing.project_id !== options.projectId &&
+      existing.classification_source === "UNCLASSIFIED" &&
+      !existing.is_manual_override
+    ) {
+      await options.connection.execute(
+        `UPDATE sessions
+            SET project_id = ?, updated_at = UTC_TIMESTAMP(6)
+          WHERE id = ? AND account_id = ?`,
+        [options.projectId, sessionId, options.accountId]
+      );
+      await options.connection.execute(
+        `UPDATE collected_events
+            SET project_id = ?
+          WHERE account_id = ? AND session_id = ?`,
+        [options.projectId, options.accountId, sessionId]
+      );
+      await options.connection.execute(
+        `UPDATE prompt_entries
+            SET project_id = ?
+          WHERE account_id = ? AND session_id = ?
+            AND is_manual_project_override = FALSE`,
+        [options.projectId, options.accountId, sessionId]
+      );
+      await options.connection.execute(
+        `UPDATE visible_results
+            SET project_id = ?
+          WHERE account_id = ? AND session_id = ?`,
+        [options.projectId, options.accountId, sessionId]
+      );
+    }
+  }
+
   await options.connection.execute(
     `INSERT INTO sessions
        (id, account_id, device_id, project_id, source_type, source_instance_id,

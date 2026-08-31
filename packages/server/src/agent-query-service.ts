@@ -146,6 +146,10 @@ function textMatchSql(): string {
       MATCH(ts.content) AGAINST (? IN NATURAL LANGUAGE MODE)
       OR ts.content LIKE ? ESCAPE '\\\\'
     ))
+    OR (pe.sanitized_content IS NOT NULL AND (
+      MATCH(pe.sanitized_content) AGAINST (? IN NATURAL LANGUAGE MODE)
+      OR pe.sanitized_content LIKE ? ESCAPE '\\\\'
+    ))
     OR br.filename LIKE ? ESCAPE '\\\\'
     OR br.requested_path LIKE ? ESCAPE '\\\\'
     OR br.real_path LIKE ? ESCAPE '\\\\'
@@ -159,6 +163,10 @@ function matchSnippetSql(): string {
               AND (MATCH(ts.content) AGAINST (? IN NATURAL LANGUAGE MODE)
                    OR ts.content LIKE ? ESCAPE '\\\\')
             THEN LEFT(ts.content, 240)
+          WHEN pe.sanitized_content IS NOT NULL
+               AND (MATCH(pe.sanitized_content) AGAINST (? IN NATURAL LANGUAGE MODE)
+                    OR pe.sanitized_content LIKE ? ESCAPE '\\\\')
+            THEN LEFT(pe.sanitized_content, 240)
           WHEN br.filename LIKE ? ESCAPE '\\\\' THEN LEFT(br.filename, 240)
           WHEN br.requested_path LIKE ? ESCAPE '\\\\' THEN LEFT(br.requested_path, 240)
           WHEN br.real_path LIKE ? ESCAPE '\\\\' THEN LEFT(br.real_path, 240)
@@ -190,7 +198,7 @@ function likeTerm(value: string): string {
 
 function textMatchValues(query: string): SqlValue[] {
   const like = likeTerm(query);
-  return [query, like, like, like, like, like, like];
+  return [query, like, query, like, like, like, like, like, like];
 }
 
 function attachmentMatchValues(query: string): SqlValue[] {
@@ -245,6 +253,8 @@ async function runWhere(options: {
             ON ts.collected_event_id = ce.id
           LEFT JOIN event_blob_references br
             ON br.collected_event_id = ce.id
+          LEFT JOIN prompt_entries pe
+            ON pe.collected_event_id = ce.id AND pe.account_id = ce.account_id
          WHERE ce.session_id = s.id AND ${textMatchSql()}
       ) OR EXISTS (
         SELECT 1
@@ -343,12 +353,16 @@ export async function listAgentRuns(options: {
        FROM collected_events ce
        LEFT JOIN agent_text_segments ts ON ts.collected_event_id = ce.id
        LEFT JOIN event_blob_references br ON br.collected_event_id = ce.id
+       LEFT JOIN prompt_entries pe
+         ON pe.collected_event_id = ce.id AND pe.account_id = ce.account_id
       WHERE ce.session_id = s.id AND ${textMatchSql()}) AS matched_event_count,
       COALESCE(
         (SELECT ${matchSnippetSql()}
            FROM collected_events ce
            LEFT JOIN agent_text_segments ts ON ts.collected_event_id = ce.id
            LEFT JOIN event_blob_references br ON br.collected_event_id = ce.id
+           LEFT JOIN prompt_entries pe
+             ON pe.collected_event_id = ce.id AND pe.account_id = ce.account_id
           WHERE ce.session_id = s.id AND ${textMatchSql()}
           ORDER BY ce.occurred_at ASC, ce.event_id ASC LIMIT 1),
         (SELECT ${attachmentSnippetSql("run_br")}
@@ -536,24 +550,45 @@ export async function listAgentEvents(options: {
     `SELECT ce.id, ce.event_id, ce.source_event_id, ce.sequence,
             ce.message_index, ce.turn_index, ce.step_index, ce.kind,
             ce.occurred_at, ce.reply_to_event_id, ce.mirror_of_event_id,
-            (SELECT LEFT(ts.content, 600)
-               FROM agent_text_segments ts
-              WHERE ts.collected_event_id = ce.id
-                AND ts.ordinal = 0
-              ORDER BY FIELD(ts.purpose, 'RENDERED_CONTENT', 'TOOL_ARGUMENTS',
-                             'TOOL_RESULT', 'SEARCH_TEXT', 'RAW_PAYLOAD'),
-                       ts.created_at DESC LIMIT 1) AS content_preview,
-            (SELECT GROUP_CONCAT(DISTINCT ts.purpose ORDER BY ts.purpose SEPARATOR ',')
-               FROM agent_text_segments ts
-              WHERE ts.collected_event_id = ce.id) AS content_purposes,
-            (SELECT COUNT(*) FROM agent_text_segments ts
-              WHERE ts.collected_event_id = ce.id) AS segment_count,
             (SELECT COUNT(*) FROM agent_text_segments ts
               WHERE ts.collected_event_id = ce.id AND ts.purpose = 'RAW_PAYLOAD')
               AS raw_segment_count,
             ce.raw_payload_sha256, ce.raw_capture_status,
             ce.normalized_coverage, ce.attachment_status,
-            ce.missing_reason, ce.metadata
+            ce.missing_reason, ce.metadata,
+            COALESCE(
+              (SELECT LEFT(ts.content, 600)
+                 FROM agent_text_segments ts
+                WHERE ts.collected_event_id = ce.id
+                  AND ts.ordinal = 0
+                ORDER BY FIELD(ts.purpose, 'RENDERED_CONTENT', 'TOOL_ARGUMENTS',
+                               'TOOL_RESULT', 'SEARCH_TEXT', 'RAW_PAYLOAD'),
+                         ts.created_at DESC LIMIT 1),
+              (SELECT LEFT(pe.sanitized_content, 600)
+                 FROM prompt_entries pe
+                WHERE pe.account_id = ce.account_id
+                  AND pe.collected_event_id = ce.id
+                LIMIT 1)
+            ) AS content_preview,
+            COALESCE(
+              (SELECT GROUP_CONCAT(DISTINCT ts.purpose ORDER BY ts.purpose SEPARATOR ',')
+                 FROM agent_text_segments ts
+                WHERE ts.collected_event_id = ce.id),
+              IF(EXISTS(
+                SELECT 1 FROM prompt_entries pe
+                 WHERE pe.account_id = ce.account_id
+                   AND pe.collected_event_id = ce.id
+              ), 'RENDERED_CONTENT', NULL)
+            ) AS content_purposes,
+            GREATEST(
+              (SELECT COUNT(*) FROM agent_text_segments ts
+                WHERE ts.collected_event_id = ce.id),
+              IF(EXISTS(
+                SELECT 1 FROM prompt_entries pe
+                 WHERE pe.account_id = ce.account_id
+                   AND pe.collected_event_id = ce.id
+              ), 1, 0)
+            ) AS segment_count
        FROM sessions s
        JOIN collected_events ce ON ce.session_id = s.id AND ce.account_id = s.account_id
       WHERE s.id = ? AND s.account_id = ? ${cursorSql}
@@ -654,6 +689,10 @@ interface ContentSegmentRow extends RowDataPacket {
   ordinal: number | string;
 }
 
+interface PromptContentRow extends RowDataPacket {
+  content: string;
+}
+
 export interface AgentEventContent {
   format: "TEXT" | "MARKDOWN" | "JSON";
   purpose: AgentTextPurpose;
@@ -676,6 +715,15 @@ function storedInteger(value: unknown, label: string): number {
     throw new Error(`Invalid stored Agent content ${label}`);
   }
   return parsed;
+}
+
+function readableBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    }
+  });
 }
 
 async function* streamTextGroup(options: {
@@ -769,7 +817,30 @@ export async function openAgentEventContentStream(options: {
     [options.accountId, options.eventId, options.purpose]
   );
   const row = rows[0];
-  if (!row) return null;
+  if (!row) {
+    // Prompt-only collectors persist the canonical text in prompt_entries,
+    // while the trajectory tables intentionally contain no agent text segments.
+    // Keep that mode readable from the Agent detail view without widening the
+    // collector's capture scope.
+    if (options.purpose !== "RENDERED_CONTENT") return null;
+    const [promptRows] = await options.pool.execute<PromptContentRow[]>(
+      `SELECT pe.sanitized_content AS content
+         FROM prompt_entries pe
+        WHERE pe.account_id = ? AND pe.collected_event_id = ?
+        LIMIT 1`,
+      [options.accountId, options.eventId]
+    );
+    const prompt = promptRows[0]?.content;
+    if (typeof prompt !== "string") return null;
+    const bytes = Buffer.from(prompt, "utf8");
+    return {
+      format: "TEXT",
+      purpose: options.purpose,
+      body: readableBytes(bytes),
+      contentSha256: sha256Hex(prompt),
+      byteLength: bytes.byteLength
+    };
+  }
   const descriptor = {
     format: row.format,
     purpose: options.purpose,

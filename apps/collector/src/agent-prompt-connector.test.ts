@@ -128,6 +128,7 @@ describe("AgentPromptConnector", () => {
       sourceSessionId: "z-session-1",
       sanitizedContent: "api_key=FAKE_PROMPT_CANARY_1234567890",
       redactionVersion: "RAW_V1",
+      projectHint: { repoRootName: "worklog" },
       contentHash: sha256Hex("api_key=FAKE_PROMPT_CANARY_1234567890")
     });
     expect(JSON.stringify(session)).not.toContain("FULL SYSTEM CONTEXT");

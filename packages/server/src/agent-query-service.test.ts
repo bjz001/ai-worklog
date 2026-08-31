@@ -86,7 +86,7 @@ describe("listAgentRuns", () => {
     expect(calls[2]?.sql).toContain("ORDER BY s.started_at DESC, s.id DESC");
     expect(calls[2]?.sql).toContain("LIMIT 25 OFFSET 25");
     expect(calls[2]?.sql).toContain("CASE WHEN ts.is_searchable = TRUE");
-    expect(calls[2]?.values.filter((value) => value === "工具结果")).toHaveLength(4);
+    expect(calls[2]?.values.filter((value) => value === "工具结果")).toHaveLength(8);
   });
 });
 
@@ -292,5 +292,36 @@ describe("getAgentEventContent", () => {
     ]);
     expect(calls[1]?.sql).toContain("ts.group_sha256 = ?");
     expect(calls[1]?.values).toContain("account-1");
+  });
+
+  it("falls back to prompt-only content for legacy agent sessions", async () => {
+    const prompt = "来自 DSH 的完整提示词";
+    const calls: Array<{ sql: string; values: unknown[] }> = [];
+    const pool = {
+      async execute(sql: string, values: unknown[]) {
+        calls.push({ sql, values });
+        if (sql.includes("ts.ordinal = 0")) return [[], []];
+        if (sql.includes("FROM prompt_entries")) {
+          return [[{ content: prompt }], []];
+        }
+        throw new Error(`unexpected query: ${sql}`);
+      }
+    } as unknown as Pool;
+
+    const content = await getAgentEventContent({
+      pool,
+      accountId: "account-1",
+      eventId: "event-db",
+      purpose: "RENDERED_CONTENT"
+    });
+
+    expect(content).toMatchObject({
+      format: "TEXT",
+      purpose: "RENDERED_CONTENT",
+      text: prompt,
+      contentSha256: sha256ForTest(prompt),
+      byteLength: Buffer.byteLength(prompt)
+    });
+    expect(calls[1]?.sql).toContain("FROM prompt_entries");
   });
 });

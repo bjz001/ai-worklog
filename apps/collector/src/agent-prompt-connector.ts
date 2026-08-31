@@ -47,6 +47,8 @@ export class AgentPromptConnector implements PromptConnector {
     const events: SyncEvent[] = [];
 
     for (const capture of captures) {
+      const run = capture.records.find((record) => record.recordType === "RUN");
+      const projectHint = run?.recordType === "RUN" ? run.projectHint : undefined;
       let messageIndex = 0;
       for (const record of capture.records) {
         if (record.recordType !== "EVENT" || record.kind !== "USER") continue;
@@ -72,6 +74,7 @@ export class AgentPromptConnector implements PromptConnector {
           sanitizedContent: content,
           contentHash: sha256Hex(content),
           redactionVersion: "RAW_V1",
+          ...(projectHint ? { projectHint } : {}),
           metadata: {}
         });
         messageIndex += 1;
