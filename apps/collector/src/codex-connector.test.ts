@@ -378,6 +378,12 @@ describe("CodexConnector", () => {
     });
 
     const session = await connector.readFile(path);
+    const rawSession = await new CodexConnector({
+      accountId: "account-1",
+      deviceId: "mac-device",
+      sourceInstanceId: "mac-codex",
+      captureMode: "raw-prompts"
+    }).readFile(path);
 
     expect(session.events.map((event) => event.sourceSessionId)).toEqual([
       "session-a",
@@ -385,6 +391,16 @@ describe("CodexConnector", () => {
       "session-a"
     ]);
     expect(session.events.map((event) => event.projectHint?.repoRootName)).toEqual([
+      "project-a",
+      "project-b",
+      "project-a"
+    ]);
+    expect(rawSession.events.map((event) => event.sourceSessionId)).toEqual([
+      "session-a",
+      "session-b",
+      "session-a"
+    ]);
+    expect(rawSession.events.map((event) => event.projectHint?.repoRootName)).toEqual([
       "project-a",
       "project-b",
       "project-a"
@@ -649,14 +665,26 @@ describe("CodexConnector", () => {
       deviceId: "mac-device",
       sourceInstanceId: "mac-codex"
     });
+    const windowsRawPrompts = new CodexConnector({
+      accountId: "account-1",
+      deviceId: "windows-device",
+      sourceInstanceId: "windows-codex",
+      captureMode: "raw-prompts"
+    });
 
     const windowsSession = await windows.readFile(resolve(fixturesRoot, "windows/session.jsonl"));
     const macosSession = await macos.readFile(resolve(fixturesRoot, "macos/session.jsonl"));
+    const windowsRawSession = await windowsRawPrompts.readFile(
+      resolve(fixturesRoot, "windows/session.jsonl")
+    );
 
     expect(windowsSession.events).toHaveLength(2);
     expect(macosSession.events).toHaveLength(2);
+    expect(windowsRawSession.events).toHaveLength(1);
     expect(windowsSession.events[0]?.projectHint?.gitRemoteKey).toBe("github.com/acme/ai-worklog");
     expect(macosSession.events[0]?.projectHint?.gitRemoteKey).toBe("github.com/acme/ai-worklog");
+    expect(windowsRawSession.events[0]?.projectHint?.gitRemoteKey).toBe("github.com/acme/ai-worklog");
+    expect(windowsRawSession.events[0]?.projectHint?.repoRootName).toBe("ai-worklog");
     expect(windowsSession.events[0]?.projectHint?.repoRootName).toBe("ai-worklog");
     expect(macosSession.events[0]?.projectHint?.repoRootName).toBe("ai-worklog");
     expect(JSON.stringify(windowsSession)).not.toContain("C:\\\\Users\\\\demo");

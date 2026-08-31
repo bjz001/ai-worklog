@@ -295,12 +295,10 @@ export class CodexConnector implements PromptConnector {
         sanitizedContent,
         contentHash: sha256Hex(sanitizedContent),
         redactionVersion: this.captureMode === "raw-prompts" ? "RAW_V1" : "core-v1",
-        ...(this.captureMode === "legacy"
-          ? {
-              projectHint: await this.projectHint(candidate.sessionMeta),
-              metadata: candidate.metadata
-            }
-          : { metadata: {} })
+        ...(candidate.sessionMeta.cwd || this.captureMode === "legacy"
+          ? { projectHint: await this.projectHint(candidate.sessionMeta) }
+          : {}),
+        metadata: this.captureMode === "legacy" ? candidate.metadata : {}
       });
 
       if (kind === "USER_PROMPT") {

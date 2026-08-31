@@ -66,8 +66,14 @@ describe("collector CLI", () => {
       events?: Array<Record<string, unknown>>;
     };
     expect(batch.events).toHaveLength(1);
-    expect(batch.events?.[0]).toMatchObject({ metadata: {} });
-    expect(batch.events?.[0]).not.toHaveProperty("projectHint");
+    expect(batch.events?.[0]).toMatchObject({
+      metadata: {},
+      projectHint: {
+        gitRemoteKey: "github.com/acme/ai-worklog",
+        repoRootName: "ai-worklog",
+        localPathHmac: expect.stringMatching(/^[a-f0-9]{64}$/u)
+      }
+    });
     expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
       protocolVersion: 1,
       sourceType: "CODEX",
