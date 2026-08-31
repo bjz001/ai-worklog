@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { SyncEvent } from "@ai-worklog/contracts";
+import { MAX_SYNC_EVENT_CONTENT_BYTES, type SyncEvent } from "@ai-worklog/contracts";
 import {
   buildEventId,
   normalizeGitRemote,
@@ -10,14 +10,17 @@ import type { NormalizedPromptSession, PromptConnector } from "./prompt-connecto
 import { readJsonlRecords, type JsonRecord } from "./jsonl-reader.js";
 import { resolveLocalProjectIdentity } from "./git-project.js";
 
-const MAX_CONTENT_LENGTH = 131_072;
+const MAX_CONTENT_LENGTH = MAX_SYNC_EVENT_CONTENT_BYTES;
 const MAX_METADATA_LENGTH = 512;
+
+export type PromptCaptureMode = "legacy" | "raw-prompts";
 
 interface ClaudeCodeConnectorOptions {
   accountId: string;
   deviceId: string;
   sourceInstanceId: string;
   pathHmacKey?: string;
+  captureMode?: PromptCaptureMode;
 }
 
 interface SessionMeta {
@@ -83,6 +86,7 @@ export class ClaudeCodeConnector implements PromptConnector {
   private readonly accountId: string;
   private readonly deviceId: string;
   private readonly pathHmacKey: string;
+  private readonly captureMode: PromptCaptureMode;
   private readonly projectCache = new Map<string, Promise<Awaited<ReturnType<typeof resolveLocalProjectIdentity>>>>();
 
   constructor(options: ClaudeCodeConnectorOptions) {
@@ -91,11 +95,12 @@ export class ClaudeCodeConnector implements PromptConnector {
     this.sourceInstanceId = options.sourceInstanceId;
     this.pathHmacKey = options.pathHmacKey
       ?? sha256Hex(`path-key-v1\u001f${options.accountId}\u001f${options.deviceId}`);
+    this.captureMode = options.captureMode ?? "legacy";
   }
 
   async readFile(filePath: string): Promise<NormalizedPromptSession> {
     const meta = await this.readSessionMeta(filePath);
-    const project = meta.cwd
+    const project = this.captureMode === "legacy" && meta.cwd
       ? await this.resolveProject(meta.cwd, meta.gitRemoteKey)
       : null;
     const projectHint = {
@@ -107,7 +112,7 @@ export class ClaudeCodeConnector implements PromptConnector {
           .digest("hex")
       } : {})
     };
-    const metadata = meta.gitBranch
+    const metadata = this.captureMode === "legacy" && meta.gitBranch
       ? { gitBranch: redactSensitiveText(meta.gitBranch).slice(0, MAX_METADATA_LENGTH) }
       : {};
     const events: SyncEvent[] = [];
@@ -122,6 +127,7 @@ export class ClaudeCodeConnector implements PromptConnector {
       const message = asRecord(record.message);
       if (!message) continue;
       const role = messageRole(record, message);
+      if (this.captureMode === "raw-prompts" && role !== "user") continue;
       if (!role) continue;
       const content = extractVisibleText(message.content);
       if (!content?.trim()) continue;
@@ -139,7 +145,9 @@ export class ClaudeCodeConnector implements PromptConnector {
         sourceMessageId,
         messageIndex
       });
-      const sanitizedContent = redactSensitiveText(content);
+      const sanitizedContent = this.captureMode === "raw-prompts"
+        ? content
+        : redactSensitiveText(content);
       const kind = role === "user" ? "USER_PROMPT" as const : "VISIBLE_RESULT" as const;
 
       events.push({
@@ -155,8 +163,8 @@ export class ClaudeCodeConnector implements PromptConnector {
         sourceTimeZone: meta.sourceTimeZone,
         sanitizedContent,
         contentHash: sha256Hex(sanitizedContent),
-        redactionVersion: "core-v1",
-        projectHint,
+        redactionVersion: this.captureMode === "raw-prompts" ? "RAW_V1" : "core-v1",
+        ...(this.captureMode === "legacy" ? { projectHint } : {}),
         metadata
       });
 

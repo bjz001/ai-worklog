@@ -3,6 +3,8 @@ import {
   readFileSync,
   writeFileSync
 } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,7 +12,7 @@ import { installZcodeHook } from "./zcode-hook-installer.js";
 import { ZCodeAgentConnector } from "./zcode-agent-connector.js";
 
 describe("ZCode Hook integration", () => {
-  it("backs up and merges all lifecycle hooks idempotently", async () => {
+  it("backs up and leaves only the user-prompt hook idempotently", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zcode-hook-"));
     const configPath = join(directory, "config.json");
     writeFileSync(configPath, JSON.stringify({
@@ -47,15 +49,40 @@ describe("ZCode Hook integration", () => {
     expect(parsed.theme).toBe("dark");
     expect(parsed.hooks.enabled).toBe(true);
     expect(Object.keys(parsed.hooks.events).sort()).toEqual([
-      "PermissionRequest",
-      "PostToolUse",
-      "PostToolUseFailure",
       "PreToolUse",
-      "SessionStart",
-      "Stop",
       "UserPromptSubmit"
     ]);
     expect(JSON.stringify(parsed)).toContain("custom");
+  });
+
+  it("persists only the complete UserPromptSubmit payload", () => {
+    const directory = mkdtempSync(join(tmpdir(), "zcode-hook-script-"));
+    const spool = join(directory, "spool");
+    const script = join(process.cwd(), "apps/collector/scripts/zcode-capture-hook.mjs");
+    execFileSync(process.execPath, [script, "--spool", spool], {
+      input: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "z-session",
+        cwd: directory,
+        prompt: "api_key=FAKE_ZCODE_RAW_PROMPT"
+      }),
+      encoding: "utf8"
+    });
+    const sessionDirectory = createHash("sha256")
+      .update("z-session")
+      .digest("hex")
+      .slice(0, 32);
+    const row = JSON.parse(readFileSync(join(spool, sessionDirectory, "events.jsonl"), "utf8"));
+
+    expect(row).toMatchObject({
+      hookInput: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "z-session",
+        prompt: "api_key=FAKE_ZCODE_RAW_PROMPT"
+      }
+    });
+    expect(row.hookInput).not.toHaveProperty("cwd");
+    expect(JSON.stringify(row)).not.toContain("transcript");
   });
 
   it("normalizes hook events and the persisted temporary transcript", async () => {

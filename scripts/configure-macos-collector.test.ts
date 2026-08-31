@@ -16,6 +16,8 @@ describe("macOS collector configuration", () => {
       "AI_WORKLOG_DEVICE_TOKEN=online-token-canary",
       "CODEX_SOURCE_INSTANCE_ID=online-codex",
       "CLAUDE_CODE_SOURCE_INSTANCE_ID=online-claude",
+      "ZCODE_HOOK_SPOOL=/Users/tester/custom-zcode-spool",
+      "DSH_HOME=/Users/tester/custom-dsh",
       "AI_WORKLOG_PATH_HMAC_KEY=existing-path-key",
       ""
     ].join("\n"));
@@ -33,6 +35,8 @@ describe("macOS collector configuration", () => {
     expect(result).toContain("AI_WORKLOG_DEVICE_TOKEN=online-token-canary\n");
     expect(result).toContain("CODEX_SOURCE_INSTANCE_ID=online-codex\n");
     expect(result).toContain("CLAUDE_CODE_SOURCE_INSTANCE_ID=online-claude\n");
+    expect(result).toContain("ZCODE_HOOK_SPOOL=/Users/tester/custom-zcode-spool\n");
+    expect(result).toContain("DSH_SOURCE_PATH=/Users/tester/custom-dsh\n");
     expect(result).toContain("AI_WORKLOG_PATH_HMAC_KEY=existing-path-key\n");
     expect(result).not.toContain("new-path-key");
   });
@@ -54,7 +58,11 @@ describe("macOS collector configuration", () => {
 
     expect(result).toContain("AI_WORKLOG_ACCOUNT_ID=account_demo\n");
     expect(result).toContain("AI_WORKLOG_DEVICE_ID=device_macos_demo\n");
-    expect(result).toContain("AI_WORKLOG_PROTOCOL_VERSION=2\n");
+    expect(result).toContain("AI_WORKLOG_PROTOCOL_VERSION=1\n");
+    expect(result).toContain("ZCODE_SOURCE_INSTANCE_ID=macos-zcode\n");
+    expect(result).toContain("ZCODE_HOOK_SPOOL=/Users/tester/.ai-worklog/zcode-spool\n");
+    expect(result).toContain("DSH_SOURCE_INSTANCE_ID=macos-dsh\n");
+    expect(result).toContain("DSH_SOURCE_PATH=/Users/tester/.dsh\n");
     expect(result).toContain("COLLECTOR_BLOB_ROOT=/Users/tester/.ai-worklog/blobs\n");
     expect(result).toContain("AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=false\n");
     expect(result).toContain("AI_WORKLOG_PATH_HMAC_KEY=generated-path-key\n");

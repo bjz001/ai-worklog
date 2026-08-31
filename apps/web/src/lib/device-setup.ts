@@ -95,6 +95,11 @@ function macSetup(
 CODEX_SOURCE_PATH="$HOME/.codex/sessions"
 CLAUDE_CODE_SOURCE_INSTANCE_ID=${bashSingleQuotedLiteral(`${enrollment.deviceId}-claude-code`)}
 CLAUDE_CODE_SOURCE_PATH="$HOME/.claude/projects"
+ZCODE_SOURCE_INSTANCE_ID=${bashSingleQuotedLiteral(`${enrollment.deviceId}-zcode`)}
+ZCODE_HOOK_SPOOL="$HOME/.ai-worklog/zcode-spool"
+ZCODE_CONFIG_PATH="$HOME/.zcode/cli/config.json"
+DSH_SOURCE_INSTANCE_ID=${bashSingleQuotedLiteral(`${enrollment.deviceId}-dsh`)}
+DSH_SOURCE_PATH="$HOME/.dsh"
 COLLECTOR_DB_PATH="$HOME/.ai-worklog/collector.sqlite"
 NODE_BINARY="$(command -v node)"
 AI_WORKLOG_PATH_HMAC_KEY=""
@@ -146,6 +151,16 @@ PRESERVED_VALUE="$(read_preserved_value "CLAUDE_CODE_SOURCE_INSTANCE_ID" || true
 [ -z "$PRESERVED_VALUE" ] || CLAUDE_CODE_SOURCE_INSTANCE_ID="$PRESERVED_VALUE"
 PRESERVED_VALUE="$(read_preserved_value "CLAUDE_CODE_SOURCE_PATH" || true)"
 [ -z "$PRESERVED_VALUE" ] || CLAUDE_CODE_SOURCE_PATH="$PRESERVED_VALUE"
+PRESERVED_VALUE="$(read_preserved_value "ZCODE_SOURCE_INSTANCE_ID" || true)"
+[ -z "$PRESERVED_VALUE" ] || ZCODE_SOURCE_INSTANCE_ID="$PRESERVED_VALUE"
+PRESERVED_VALUE="$(read_preserved_value "ZCODE_HOOK_SPOOL" || true)"
+[ -z "$PRESERVED_VALUE" ] || ZCODE_HOOK_SPOOL="$PRESERVED_VALUE"
+PRESERVED_VALUE="$(read_preserved_value "ZCODE_CONFIG_PATH" || true)"
+[ -z "$PRESERVED_VALUE" ] || ZCODE_CONFIG_PATH="$PRESERVED_VALUE"
+PRESERVED_VALUE="$(read_preserved_value "DSH_SOURCE_INSTANCE_ID" || true)"
+[ -z "$PRESERVED_VALUE" ] || DSH_SOURCE_INSTANCE_ID="$PRESERVED_VALUE"
+PRESERVED_VALUE="$(read_preserved_value "DSH_SOURCE_PATH" || true)"
+[ -z "$PRESERVED_VALUE" ] || DSH_SOURCE_PATH="$PRESERVED_VALUE"
 PRESERVED_VALUE="$(read_preserved_value "COLLECTOR_DB_PATH" || true)"
 [ -z "$PRESERVED_VALUE" ] || COLLECTOR_DB_PATH="$PRESERVED_VALUE"
 PRESERVED_VALUE="$(read_preserved_value "NODE_BINARY" || true)"
@@ -155,9 +170,10 @@ PRESERVED_VALUE="$(read_preserved_value "AI_WORKLOG_PATH_HMAC_KEY" || true)"
 if [ -z "$AI_WORKLOG_PATH_HMAC_KEY" ]; then
   AI_WORKLOG_PATH_HMAC_KEY="$(openssl rand -hex 32)"
 fi
-mkdir -p "$CODEX_SOURCE_PATH" "$CLAUDE_CODE_SOURCE_PATH"`
+mkdir -p "$CODEX_SOURCE_PATH" "$CLAUDE_CODE_SOURCE_PATH" "$ZCODE_HOOK_SPOOL"`
     : `mkdir -p "$HOME/.codex/sessions"
 mkdir -p "$HOME/.claude/projects"
+mkdir -p "$HOME/.ai-worklog/zcode-spool"
 AI_WORKLOG_PATH_HMAC_KEY="$(openssl rand -hex 32)"
 NODE_BINARY="$(command -v node)"
 CONFIG_IS_SAFE=true
@@ -181,12 +197,22 @@ fi`;
   printf '%s\\n' "CODEX_SOURCE_PATH=$CODEX_SOURCE_PATH"
   printf '%s\\n' "CLAUDE_CODE_SOURCE_INSTANCE_ID=$CLAUDE_CODE_SOURCE_INSTANCE_ID"
   printf '%s\\n' "CLAUDE_CODE_SOURCE_PATH=$CLAUDE_CODE_SOURCE_PATH"
+  printf '%s\\n' "ZCODE_SOURCE_INSTANCE_ID=$ZCODE_SOURCE_INSTANCE_ID"
+  printf '%s\\n' "ZCODE_HOOK_SPOOL=$ZCODE_HOOK_SPOOL"
+  printf '%s\\n' "ZCODE_CONFIG_PATH=$ZCODE_CONFIG_PATH"
+  printf '%s\\n' "DSH_SOURCE_INSTANCE_ID=$DSH_SOURCE_INSTANCE_ID"
+  printf '%s\\n' "DSH_SOURCE_PATH=$DSH_SOURCE_PATH"
   printf '%s\\n' "AI_WORKLOG_PATH_HMAC_KEY=$AI_WORKLOG_PATH_HMAC_KEY"
   printf '%s\\n' "COLLECTOR_DB_PATH=$COLLECTOR_DB_PATH"`
     : `  printf '%s\\n' ${bashSingleQuotedLiteral(`CODEX_SOURCE_INSTANCE_ID=${enrollment.deviceId}-codex`)}
   printf '%s\\n' "CODEX_SOURCE_PATH=$HOME/.codex/sessions"
   printf '%s\\n' ${bashSingleQuotedLiteral(`CLAUDE_CODE_SOURCE_INSTANCE_ID=${enrollment.deviceId}-claude-code`)}
   printf '%s\\n' "CLAUDE_CODE_SOURCE_PATH=$HOME/.claude/projects"
+  printf '%s\\n' ${bashSingleQuotedLiteral(`ZCODE_SOURCE_INSTANCE_ID=${enrollment.deviceId}-zcode`)}
+  printf '%s\\n' "ZCODE_HOOK_SPOOL=$HOME/.ai-worklog/zcode-spool"
+  printf '%s\\n' "ZCODE_CONFIG_PATH=$HOME/.zcode/cli/config.json"
+  printf '%s\\n' ${bashSingleQuotedLiteral(`DSH_SOURCE_INSTANCE_ID=${enrollment.deviceId}-dsh`)}
+  printf '%s\\n' "DSH_SOURCE_PATH=$HOME/.dsh"
   printf '%s\\n' "AI_WORKLOG_PATH_HMAC_KEY=$AI_WORKLOG_PATH_HMAC_KEY"
   printf '%s\\n' "COLLECTOR_DB_PATH=$HOME/.ai-worklog/collector.sqlite"`;
   return {
@@ -228,6 +254,7 @@ chmod 600 "$TEMP_CONFIG"
 {
   printf '%s\\n' ${bashSingleQuotedLiteral(`AI_WORKLOG_ACCOUNT_ID=${enrollment.accountId}`)}
   printf '%s\\n' ${bashSingleQuotedLiteral(`AI_WORKLOG_DEVICE_ID=${enrollment.deviceId}`)}
+  printf '%s\\n' "AI_WORKLOG_PROTOCOL_VERSION=1"
 ${localLines}
   printf '%s\\n' ${bashSingleQuotedLiteral(`AI_WORKLOG_SYNC_URL=${enrollment.syncUrl}`)}
   printf '%s\\n' ${bashSingleQuotedLiteral(`AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=${insecureLan}`)}
@@ -244,6 +271,7 @@ echo '配置已写入 ~/.config/ai-worklog/collector.env'
 bash scripts/schedules/macos/run.sh --config "$CONFIG" --dry-run
 bash scripts/schedules/macos/run.sh --config "$CONFIG"`,
     installCommand: `CONFIG="$HOME/.config/ai-worklog/collector.env"
+ZCODE_CONFIG_PATH="$HOME/.zcode/cli/config.json" ZCODE_HOOK_SPOOL="$HOME/.ai-worklog/zcode-spool" npm run collector -- install-zcode-hook
 bash scripts/schedules/macos/install.sh --config "$CONFIG" --dry-run
 bash scripts/schedules/macos/install.sh --config "$CONFIG"`
   };
@@ -258,6 +286,9 @@ function windowsSetup(
   const localSetup = mode === "ROTATE"
     ? `$DefaultCodexPath = Join-Path $HOME '.codex\\sessions'
   $DefaultClaudePath = Join-Path $HOME '.claude\\projects'
+  $DefaultZcodeSpoolPath = Join-Path $DataDirectory 'zcode-spool'
+  $DefaultZcodeConfigPath = Join-Path $HOME '.zcode\\cli\\config.json'
+  $DefaultDshPath = Join-Path $HOME '.dsh'
   $DefaultCollectorDbPath = Join-Path $DataDirectory 'collector.sqlite'
   $DefaultNodeBinary = (Get-Command node -ErrorAction Stop).Source
   $PreserveKeys = @(
@@ -266,6 +297,11 @@ function windowsSetup(
     'CODEX_SOURCE_PATH',
     'CLAUDE_CODE_SOURCE_INSTANCE_ID',
     'CLAUDE_CODE_SOURCE_PATH',
+    'ZCODE_SOURCE_INSTANCE_ID',
+    'ZCODE_HOOK_SPOOL',
+    'ZCODE_CONFIG_PATH',
+    'DSH_SOURCE_INSTANCE_ID',
+    'DSH_SOURCE_PATH',
     'COLLECTOR_DB_PATH',
     'NODE_BINARY'
   )
@@ -311,6 +347,26 @@ function windowsSetup(
       -not [string]::IsNullOrWhiteSpace($PreservedValues['CLAUDE_CODE_SOURCE_PATH'])) {
     [string]$PreservedValues['CLAUDE_CODE_SOURCE_PATH']
   } else { $DefaultClaudePath }
+  $ZcodeSourceInstanceId = if ($PreservedValues.ContainsKey('ZCODE_SOURCE_INSTANCE_ID') -and
+      -not [string]::IsNullOrWhiteSpace($PreservedValues['ZCODE_SOURCE_INSTANCE_ID'])) {
+    [string]$PreservedValues['ZCODE_SOURCE_INSTANCE_ID']
+  } else { ${powerShellSingleQuotedLiteral(`${enrollment.deviceId}-zcode`)} }
+  $ZcodeSpoolPath = if ($PreservedValues.ContainsKey('ZCODE_HOOK_SPOOL') -and
+      -not [string]::IsNullOrWhiteSpace($PreservedValues['ZCODE_HOOK_SPOOL'])) {
+    [string]$PreservedValues['ZCODE_HOOK_SPOOL']
+  } else { $DefaultZcodeSpoolPath }
+  $ZcodeConfigPath = if ($PreservedValues.ContainsKey('ZCODE_CONFIG_PATH') -and
+      -not [string]::IsNullOrWhiteSpace($PreservedValues['ZCODE_CONFIG_PATH'])) {
+    [string]$PreservedValues['ZCODE_CONFIG_PATH']
+  } else { $DefaultZcodeConfigPath }
+  $DshSourceInstanceId = if ($PreservedValues.ContainsKey('DSH_SOURCE_INSTANCE_ID') -and
+      -not [string]::IsNullOrWhiteSpace($PreservedValues['DSH_SOURCE_INSTANCE_ID'])) {
+    [string]$PreservedValues['DSH_SOURCE_INSTANCE_ID']
+  } else { ${powerShellSingleQuotedLiteral(`${enrollment.deviceId}-dsh`)} }
+  $DshPath = if ($PreservedValues.ContainsKey('DSH_SOURCE_PATH') -and
+      -not [string]::IsNullOrWhiteSpace($PreservedValues['DSH_SOURCE_PATH'])) {
+    [string]$PreservedValues['DSH_SOURCE_PATH']
+  } else { $DefaultDshPath }
   $CollectorDbPath = if ($PreservedValues.ContainsKey('COLLECTOR_DB_PATH') -and
       -not [string]::IsNullOrWhiteSpace($PreservedValues['COLLECTOR_DB_PATH'])) {
     [string]$PreservedValues['COLLECTOR_DB_PATH']
@@ -332,6 +388,9 @@ function windowsSetup(
   }`
     : `$CodexPath = Join-Path $HOME '.codex\\sessions'
   $ClaudePath = Join-Path $HOME '.claude\\projects'
+  $ZcodeSpoolPath = Join-Path $DataDirectory 'zcode-spool'
+  $ZcodeConfigPath = Join-Path $HOME '.zcode\\cli\\config.json'
+  $DshPath = Join-Path $HOME '.dsh'
   $NodeBinary = (Get-Command node -ErrorAction Stop).Source
   $Random = [Security.Cryptography.RandomNumberGenerator]::Create()
   $Bytes = New-Object byte[] 32
@@ -343,12 +402,22 @@ function windowsSetup(
     "CODEX_SOURCE_PATH=$CodexPath",
     "CLAUDE_CODE_SOURCE_INSTANCE_ID=$ClaudeSourceInstanceId",
     "CLAUDE_CODE_SOURCE_PATH=$ClaudePath",
+    "ZCODE_SOURCE_INSTANCE_ID=$ZcodeSourceInstanceId",
+    "ZCODE_HOOK_SPOOL=$ZcodeSpoolPath",
+    "ZCODE_CONFIG_PATH=$ZcodeConfigPath",
+    "DSH_SOURCE_INSTANCE_ID=$DshSourceInstanceId",
+    "DSH_SOURCE_PATH=$DshPath",
     "AI_WORKLOG_PATH_HMAC_KEY=$HmacKey",
     "COLLECTOR_DB_PATH=$CollectorDbPath",`
     : `    ${powerShellSingleQuotedLiteral(`CODEX_SOURCE_INSTANCE_ID=${enrollment.deviceId}-codex`)},
     "CODEX_SOURCE_PATH=$CodexPath",
     ${powerShellSingleQuotedLiteral(`CLAUDE_CODE_SOURCE_INSTANCE_ID=${enrollment.deviceId}-claude-code`)},
     "CLAUDE_CODE_SOURCE_PATH=$ClaudePath",
+    ${powerShellSingleQuotedLiteral(`ZCODE_SOURCE_INSTANCE_ID=${enrollment.deviceId}-zcode`)},
+    "ZCODE_HOOK_SPOOL=$ZcodeSpoolPath",
+    "ZCODE_CONFIG_PATH=$ZcodeConfigPath",
+    ${powerShellSingleQuotedLiteral(`DSH_SOURCE_INSTANCE_ID=${enrollment.deviceId}-dsh`)},
+    "DSH_SOURCE_PATH=$DshPath",
     "AI_WORKLOG_PATH_HMAC_KEY=$HmacKey",
     "COLLECTOR_DB_PATH=$(Join-Path $DataDirectory 'collector.sqlite')",`;
   return {
@@ -366,7 +435,7 @@ try {
   $DataDirectory = Join-Path $env:LOCALAPPDATA 'AIWorklog'
   ${localSetup}
   New-Item -ItemType Directory -Path $DataDirectory -Force | Out-Null
-  New-Item -ItemType Directory -Path $CodexPath, $ClaudePath -Force | Out-Null
+  New-Item -ItemType Directory -Path $CodexPath, $ClaudePath, $ZcodeSpoolPath -Force | Out-Null
   $TempConfig = Join-Path $DataDirectory ([IO.Path]::GetRandomFileName())
   New-Item -ItemType File -Path $TempConfig -Force | Out-Null
   $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -381,6 +450,7 @@ try {
   $Lines = @(
     ${powerShellSingleQuotedLiteral(`AI_WORKLOG_ACCOUNT_ID=${enrollment.accountId}`)},
     ${powerShellSingleQuotedLiteral(`AI_WORKLOG_DEVICE_ID=${enrollment.deviceId}`)},
+    'AI_WORKLOG_PROTOCOL_VERSION=1',
 ${localLines}
     ${powerShellSingleQuotedLiteral(`AI_WORKLOG_SYNC_URL=${enrollment.syncUrl}`)},
     ${powerShellSingleQuotedLiteral(`AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=${insecureLan}`)},
@@ -425,6 +495,11 @@ namespace AIWorklog {
 & ".\\scripts\\schedules\\windows\\Run.ps1" -ConfigPath $Config -DryRun
 & ".\\scripts\\schedules\\windows\\Run.ps1" -ConfigPath $Config`,
     installCommand: `$Config = Join-Path $env:LOCALAPPDATA "AIWorklog\\collector.env"
+$env:ZCODE_CONFIG_PATH = Join-Path $HOME '.zcode\\cli\\config.json'
+$env:ZCODE_HOOK_SPOOL = Join-Path $env:LOCALAPPDATA 'AIWorklog\\zcode-spool'
+& ".\\scripts\\schedules\\windows\\Run.ps1" -ConfigPath $Config -QuarantineLegacy
+& ".\\scripts\\schedules\\windows\\Run.ps1" -ConfigPath $Config -Status
+npm run collector -- install-zcode-hook
 & ".\\scripts\\schedules\\windows\\Install.ps1" -ConfigPath $Config -DryRun
 & ".\\scripts\\schedules\\windows\\Install.ps1" -ConfigPath $Config`
   };

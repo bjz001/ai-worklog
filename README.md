@@ -1,11 +1,11 @@
 # AI 工作沉淀台
 
-一个面向个人的跨设备 Agent 工作记录工具。Windows 和 macOS 只读采集 Codex、Claude Code、Z.ai ZCode 与 DeepSeek Harness（DSH）的完整会话事件，以不脱敏、不截断的 protocol v2 同步到中心服务，按 Git Remote 归并项目，支持全文搜索、Agent Loop 时间线、工作总结和 Skill 候选。来源未暴露的隐藏内容只标记 `NOT_EXPOSED`，不猜测或补全。
+一个面向个人的跨设备 Agent 工作记录工具。Windows 和 macOS 只读采集 Codex、Claude Code、Z.ai ZCode 与 DeepSeek Harness（DSH）的完整用户 Prompt，以不脱敏的 protocol v1 同步到中心服务，支持全文搜索、工作总结和日历视图。上下文、助手回复、推理、工具调用和转录附件均不采集。
 
 ```mermaid
 flowchart LR
-  W["Windows<br/>四类 Agent"] -->|"原始事件 + 分块 Blob"| A["中心 API"]
-  M["macOS<br/>四类 Agent"] -->|"原始事件 + 分块 Blob"| A
+  W["Windows<br/>四类 Agent"] -->|"完整原始 Prompt"| A["中心 API"]
+  M["macOS<br/>四类 Agent"] -->|"完整原始 Prompt"| A
   A --> D[("MySQL 8<br/>ai_worklog")]
   D --> U["工作台 / 项目 / 日历<br/>Agent 轨迹 / Skill / 同步中心"]
   D --> K["中央 Worker"]
@@ -16,9 +16,9 @@ flowchart LR
 
 ## 已实现
 
-- 连接器 registry 一次自动探测四类来源：Codex 完整 JSONL、Claude Code 内容块/sidechain、DSH JSONL/zstd/SQLite，以及 ZCode Hook spool 与临时 transcript。
-- 会话 → 回合 → 事件 → 原始载荷/附件的统一模型，覆盖 system、context、user、assistant、reasoning、tool call/result、search、state、subagent、compaction 和未知来源事件。
-- SQLite Outbox、2 MiB JSON 批次、UTF-8 文本分段、1 MiB Blob 分块、事件先入库、ACK 后确认与断点续传。
+- 连接器 registry 一次自动探测四类来源：Codex、Claude Code、ZCode Hook spool 和 DSH JSONL/zstd/SQLite。
+- 只将用户提交的完整 Prompt 写入 SQLite Outbox；不写入上下文、助手回复、推理、工具调用、转录或附件。
+- SQLite Outbox、2 MiB JSON 批次、ACK 后确认与断点续传。
 - 设备独立 Token HMAC 鉴权、请求摘要、幂等批次与事件版本。
 - MySQL 8 迁移、UTC `DATETIME(6)`、`utf8mb4`、ngram 中文全文索引。
 - 两台设备通过规范化 Git Remote 归并到同一项目。
@@ -99,7 +99,7 @@ AI_WORKLOG_DEVICE_ID=device_macos_demo
 AI_WORKLOG_DEVICE_TOKEN=<this-device-token>
 AI_WORKLOG_SYNC_URL=https://worklog.example.com/api/v1/sync/batches
 AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=false
-AI_WORKLOG_PROTOCOL_VERSION=2
+AI_WORKLOG_PROTOCOL_VERSION=1
 AI_WORKLOG_PATH_HMAC_KEY=<random-per-device-key>
 COLLECTOR_DB_PATH=/Users/me/.ai-worklog/collector.sqlite
 COLLECTOR_BLOB_ROOT=/Users/me/.ai-worklog/blobs
@@ -110,6 +110,7 @@ CLAUDE_CODE_SOURCE_INSTANCE_ID=claude-mac-main
 CLAUDE_CODE_SOURCE_PATH=/Users/me/.claude/projects
 ZCODE_SOURCE_INSTANCE_ID=zcode-mac-main
 ZCODE_HOOK_SPOOL=/Users/me/.ai-worklog/zcode-spool
+ZCODE_CONFIG_PATH=/Users/me/.zcode/cli/config.json
 DSH_SOURCE_INSTANCE_ID=dsh-mac-main
 DSH_HOME=/Users/me/.dsh
 ```
@@ -173,7 +174,7 @@ npm run llm:key:init
 默认使用 DeepSeek 官方 `https://api.deepseek.com` 与 `deepseek-v4-flash`。API Key 使用绑定账户的 AES-256-GCM 密文存入 MySQL；GET API 和页面只返回 `hasApiKey`，不会返回明文、密文、尾号、IV 或认证标签。主密钥不会自动生成；替换 `LLM_SETTINGS_ENCRYPTION_KEY` 前必须先迁移已有密文，否则旧配置无法解密。
 更换服务商或 Base URL 的 origin 时必须输入新 Key；系统不会把已保存的 DeepSeek Key 复用到新域名。“测试连接”按账户限制为每分钟 5 次，防止误点或脚本反复发起付费请求。
 
-v2 总结会将未脱敏的用户消息与助手结果兼容投影发送给已配置的外部 LLM。输入仍受模型上下文和证据选择总量上限约束；超出时 API/UI/导出都明确标记 `inputTruncated`。模型输入被标记为不可信证据，不执行其中的命令或链接。LLM API Key 继续以绑定账户的 AES-256-GCM 密文保存；Skill 候选仍由确定性规则生成并保持人工确认。
+总结会将已同步的用户 Prompt 作为不可信证据发送给已配置的外部 LLM。输入仍受模型上下文和证据选择总量上限约束；超出时 API/UI/导出都明确标记 `inputTruncated`。模型输入不执行其中的命令或链接。LLM API Key 继续以绑定账户的 AES-256-GCM 密文保存；Skill 候选仍由确定性规则生成并保持人工确认。
 
 ## API
 
@@ -201,11 +202,11 @@ v2 总结会将未脱敏的用户消息与助手结果兼容投影发送给已�
 
 ## 安全边界
 
-- protocol v2 将来源实际暴露的 system/context/user/assistant/reasoning/工具原文上传并长期保留，不做正文脱敏、截断或正文级加密。v1 仍保持旧脱敏校验。
+- protocol v1 只上传用户 Prompt 原文，不做正文脱敏；上下文、助手、推理、工具和转录内容不上传。
 - 中心需要做全文搜索与总结，因此这不是“服务器看不到明文”的零知识系统。复制文件正文不进全文索引，但可通过 Blob 下载。
 - 历史 Prompt、助手结果和 Skill 全部作为不可信数据，不执行其中的命令、链接或工具调用。
 - LLM 写接口要求可信 `APP_BASE_URL` 同源、JSON Content-Type、自定义请求标记与 16 KiB 请求上限；上游地址拒绝私网解析和重定向。
-- v2 中心服务验证事件身份、账户/设备/来源所有权、顺序、内容摘要、分段边界与 Blob 引用，不再要求脱敏状态。
+- 中心服务验证事件身份、账户/设备/来源所有权、顺序和内容摘要，并允许 `RAW_V1` Prompt 原文通过校验。
 - 日志只记录 ID、计数和错误码，不记录 Prompt、Token 或 Git Remote。
 - `AI_WORKLOG_BLOB_ROOT` 必须是非根绝对路径；账户目录与对象文件权限分别为 `0700`/`0600`，并以 SHA-256 验证。
 - 只在显式开启时允许 localhost/RFC1918 HTTP；此模式下原文和设备 Token 都可能被局域网监听，公网 HTTP 仍拒绝。
@@ -222,13 +223,13 @@ npm run build
 
 真实 Chrome 视口验证脚本位于 `scripts/browser-smoke.mjs`，通过 Chrome DevTools Protocol 检查页面例外、网络失败、交互元素可访问名称并生成截图。
 
-## v2 发布、回补与回退
+## Prompt-only 采集协议
 
-发布顺序是：先执行数据库迁移，再发布同时接受 v1/v2 的服务端，然后发布 Agent 轨迹 UI，最后更新采集器并安装 ZCode Hook。`0008_agent_trajectories.sql` 只叠加新结构，不改写已有 `0007_llm_summary_prompts.sql` 或未提交的总结提示词工作。
+采集器默认使用 protocol v1 的 Prompt-only 模式。每次 `prepare` 自动探测 Codex、Claude Code、ZCode、DSH 四类来源，只转换用户消息为 `USER_PROMPT`，正文保留来源提供的完整原文，不做脱敏。上下文、助手、推理、工具事件和转录文件不会进入 Outbox。
 
-首次 v2 `prepare` 会扫描当前可发现的历史日志，本地指纹游标保证后续增量。已有用户/助手事件继续使用稳定 event ID，只补充 RAW 版本和缺失事件；日志删除、损坏或格式过新时保留现有记录并标记不可回补。
+ZCode 通过 `UserPromptSubmit` Hook 写入 Prompt spool；不会读取或复制 `transcript_path`。DSH 只读取其本地持久化格式并提取用户消息，不上传其他记录。
 
-回退时停止 v2 采集器，或在设备端设置 `AI_WORKLOG_PROTOCOL_VERSION=1`。新表保持惰性，不需要破坏性数据库回滚。DSH 解码遵循其 [JSONL session persistence 契约](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/session/session-persistence-jsonl/README.md)；ZCode 采集遵循官方 [Hooks 事件与 `transcript_path` 契约](https://zcode.z.ai/en/docs/hooks)。
+可用 `--source CODEX|CLAUDE_CODE|ZCODE|DSH` 单独回补某一来源，`--force-history` 忽略本地指纹游标。DSH 解码遵循其 [JSONL session persistence 契约](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/session/session-persistence-jsonl/README.md)。
 
 ## MVP 边界
 

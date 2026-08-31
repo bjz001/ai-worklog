@@ -1,6 +1,6 @@
 # AI Worklog 每日采集与同步
 
-这套脚本按设备本地时区运行：macOS 每天 18:00、Windows 每天 23:30。protocol v2 会用四个隔离的 Node 进程依次自动探测和准备 Codex、Claude Code、ZCode、DSH，每个来源结束后都释放其内存，再将 Outbox 中的事件与 Blob 以有界批量发送到中央 API。Blob 与事件批次独立排程，事件批次失败不再阻塞已缓存 Blob 上传。v2 保存来源暴露的原文，不在写入 Outbox 前脱敏；设备 Token 仍不进入轨迹或日志。显式设为 protocol v1 时，调度器保留旧的 Codex → Claude Code 脱敏采集顺序用于回退。
+这套脚本按设备本地时区运行：macOS 每天 18:00、Windows 每天 23:30。调度器每次启动一个采集进程，自动探测并准备 Codex、Claude Code、ZCode、DSH 四类来源，再将仅含完整用户 Prompt 的 Outbox 批次发送到中央 API。Prompt 不脱敏；上下文、助手、推理、工具、转录和附件均不采集。设备 Token 仍不进入 Prompt 或日志。
 
 中央服务所在的 Mac 可另外安装一个每天 23:40 的总结 Worker LaunchAgent。该任务永远调用无参数的有界默认模式，最多处理当天与有待处理任务的昨天；它不会自动传入历史回补参数。
 
@@ -15,7 +15,7 @@
 - `AI_WORKLOG_ACCOUNT_ID`：两台机器保持一致。
 - `AI_WORKLOG_DEVICE_ID`：每台机器唯一。
 - 该 ID 必须与中心端 Token 的绑定一致：默认 Seed 中 Mac 为 `device_macos_demo` + `MACOS_DEVICE_TOKEN`，Windows 为 `device_windows_demo` + `WINDOWS_DEVICE_TOKEN`；自定义时使用 `MACOS_DEVICE_ID` / `WINDOWS_DEVICE_ID` 后重新 Seed。
-- `AI_WORKLOG_PROTOCOL_VERSION`：默认 `2`；只有需要回退旧采集器时设为 `1`。
+- `AI_WORKLOG_PROTOCOL_VERSION`：默认 `1`，当前为 Prompt-only 采集协议。
 - `CODEX_SOURCE_*`、`CLAUDE_CODE_SOURCE_*`、`ZCODE_SOURCE_*`/`ZCODE_HOOK_SPOOL`、`DSH_SOURCE_PATH`/`DSH_HOME`：可选覆盖。未设置时使用 `~/.codex/sessions`、`~/.claude/projects`、`~/.ai-worklog/zcode-spool` 和 `$DSH_HOME`/`~/.dsh`。
 - `AI_WORKLOG_PATH_HMAC_KEY`：用于不可逆标识本地路径的随机值。
 - `COLLECTOR_DB_PATH`：本机 SQLite Outbox 绝对路径。
@@ -181,6 +181,17 @@ AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=true
 
 配置文件的所有者必须是当前用户，具有读权限的身份只能是当前用户、SYSTEM 和 Administrators。然后验证并安装每天 23:30 的任务：
 
+如果这台 Windows 曾经运行过旧 v2 采集器，首次切换到 Prompt-only v1 前必须先备份 `collector.sqlite`、WAL/SHM 文件和 Blob 目录，再在新版本代码目录执行：
+
+```powershell
+& ".\scripts\schedules\windows\Run.ps1" -ConfigPath $Config -QuarantineLegacy
+& ".\scripts\schedules\windows\Run.ps1" -ConfigPath $Config -Status
+```
+
+该命令只在本地事务中隔离旧 v2 pending 批次和 pending Blob，不联网、不删除原始会话或 Blob 文件。新版本 `sync` 也会在检测到未隔离的旧批次或 Blob 时直接阻断，避免旧上下文或附件误上传。
+
+确认输出中的 `quarantinedBatches`、`quarantinedBlobs` 后，再验证并安装每天 23:30 的任务：
+
 ```powershell
 & ".\scripts\schedules\windows\Run.ps1" -ConfigPath $Config -DryRun
 & ".\scripts\schedules\windows\Run.ps1" -ConfigPath $Config
@@ -201,9 +212,10 @@ AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=true
 
 - 配置校验失败时只输出通用状态，不回显配置行或值。
 - 同一台机器不会并发运行多个采集任务。
-- v2 每次依次用独立进程准备 Codex、Claude Code、ZCode 和 DSH，再执行一次 `sync`；任一来源失败后仍会继续后续来源并同步已有 Outbox。v1 仅分别调用 Codex 与 Claude Code。
+- 每次运行一次采集进程，自动准备 Codex、Claude Code、ZCode 和 DSH，再执行一次 `sync`；任一来源文件失败后仍会继续处理其他来源并同步已有 Outbox。
 - 任一阶段失败时，调度最终记录 `partial` 并以非零状态退出。
 - 上传失败的批次保留在本地 Outbox，下次运行继续重试。
+- 从旧 v2 升级时，必须先运行 `quarantine-legacy`；未隔离的旧批次或 Blob 会使新 `sync` 安全阻断。
 - 移动项目目录、Node.js 路径或配置文件后，需重新执行安装脚本。
 - 卸载仅删除调度任务，不删除配置、Outbox 和日志。
 - 中央 Mac Worker 使用独立的内核文件锁；重叠调度会安全跳过，进程正常退出或崩溃后锁都由内核自动释放，保留的空锁文件可安全复用。

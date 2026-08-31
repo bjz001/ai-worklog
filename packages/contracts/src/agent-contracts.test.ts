@@ -168,7 +168,7 @@ describe("agent trajectory protocol v2", () => {
     })).success).toBe(true);
   });
 
-  it("keeps protocol v1 unchanged while accepting v2 through the union boundary", () => {
+  it("accepts all four Prompt sources through the protocol v1 boundary", () => {
     const v1 = {
       protocolVersion: 1,
       batchId: "legacy",
@@ -197,7 +197,7 @@ describe("agent trajectory protocol v2", () => {
     expect(SyncRequestSchema.safeParse({
       ...v1,
       source: { ...v1.source, type: "DSH" }
-    }).success).toBe(false);
+    }).success).toBe(true);
   });
 });
 

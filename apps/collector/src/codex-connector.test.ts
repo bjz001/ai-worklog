@@ -66,6 +66,21 @@ describe("CodexConnector", () => {
         }]
       }
     });
+
+    const rawSession = await new CodexConnector({
+      accountId: "account-1",
+      deviceId: "mac-device",
+      sourceInstanceId: "mac-codex",
+      captureMode: "raw-prompts"
+    }).readFile(path);
+    expect(rawSession.events).toHaveLength(1);
+    expect(rawSession.events[0]).toMatchObject({
+      kind: "USER_PROMPT",
+      sanitizedContent: visiblePrompt,
+      redactionVersion: "RAW_V1",
+      metadata: {}
+    });
+    expect(rawSession.events[0]).not.toHaveProperty("projectHint");
   });
 
   it("emits both current-segment v3 and first-segment v2 aliases", async () => {
@@ -666,6 +681,43 @@ describe("CodexConnector", () => {
     );
     expect(first.events.map((event) => event.messageIndex)).toEqual([0, 1]);
     expect(first.events.every((event) => /^[a-f0-9]{64}$/.test(event.contentHash))).toBe(true);
+  });
+
+  it("keeps a raw Prompt longer than the former 128 KiB cap intact", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "codex-raw-prompt-"));
+    const path = join(directory, "session.jsonl");
+    const rawPrompt = "api_key=FAKE_LONG_PROMPT_CANARY\n" + "完整 Prompt ".repeat(20_000);
+    writeFileSync(path, [
+      {
+        timestamp: "2026-07-14T08:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "raw-prompt-session", source_time_zone: "UTC" }
+      },
+      {
+        timestamp: "2026-07-14T08:00:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          client_id: "raw-prompt-message",
+          message: rawPrompt,
+          images: [],
+          local_images: [],
+          text_elements: []
+        }
+      }
+    ].map((record) => JSON.stringify(record)).join("\n"));
+
+    const session = await new CodexConnector({
+      accountId: "account-1",
+      deviceId: "windows-device",
+      sourceInstanceId: "windows-codex",
+      captureMode: "raw-prompts"
+    }).readFile(path);
+
+    expect(rawPrompt.length).toBeGreaterThan(131_072);
+    expect(session.events).toHaveLength(1);
+    expect(session.events[0]?.sanitizedContent).toBe(rawPrompt);
+    expect(session.events[0]?.redactionVersion).toBe("RAW_V1");
   });
 
   it("preserves v1 server identities when ignored records surround messages without IDs", async () => {

@@ -1,6 +1,6 @@
-import type { SyncEvent } from "@ai-worklog/contracts";
+import type { AgentSourceType, SyncEvent } from "@ai-worklog/contracts";
 
-export type PromptSourceType = "CODEX" | "CLAUDE_CODE";
+export type PromptSourceType = AgentSourceType;
 
 export interface NormalizedPromptSession {
   sessionId: string;

@@ -33,6 +33,11 @@ const preservedKeys = [
   "CODEX_SOURCE_PATH",
   "CLAUDE_CODE_SOURCE_INSTANCE_ID",
   "CLAUDE_CODE_SOURCE_PATH",
+  "ZCODE_SOURCE_INSTANCE_ID",
+  "ZCODE_HOOK_SPOOL",
+  "ZCODE_CONFIG_PATH",
+  "DSH_SOURCE_INSTANCE_ID",
+  "DSH_SOURCE_PATH",
   "COLLECTOR_DB_PATH",
   "NODE_BINARY"
 ];
@@ -65,6 +70,19 @@ describe("buildDeviceSetup", () => {
     );
   });
 
+  it("quarantines legacy Windows Outbox data before installing the scheduler", () => {
+    const command = buildDeviceSetup("WINDOWS", enrollment).installCommand;
+    const quarantine = command.indexOf("Run.ps1\" -ConfigPath $Config -QuarantineLegacy");
+    const status = command.indexOf("Run.ps1\" -ConfigPath $Config -Status");
+    const hook = command.indexOf("npm run collector -- install-zcode-hook");
+    const install = command.indexOf("Install.ps1");
+
+    expect(quarantine).toBeGreaterThan(-1);
+    expect(quarantine).toBeLessThan(status);
+    expect(status).toBeLessThan(hook);
+    expect(hook).toBeLessThan(install);
+  });
+
   it.each(["MACOS", "WINDOWS"] as const)(
     "keeps first-time defaults without reading an existing %s config",
     (platform) => {
@@ -76,6 +94,8 @@ describe("buildDeviceSetup", () => {
       );
       expect(command).toContain(".codex");
       expect(command).toContain(".claude");
+      expect(command).toContain("ZCODE_HOOK_SPOOL");
+      expect(command).toContain("DSH_SOURCE_PATH");
       expect(command).toContain("collector.sqlite");
       expect(command).not.toContain("read_preserved_value");
       expect(command).not.toContain("$PreserveKeys");
@@ -234,6 +254,7 @@ describe("buildDeviceSetup", () => {
 
     expect(command).toContain('mkdir -p "$HOME/.codex/sessions"');
     expect(command).toContain('mkdir -p "$HOME/.claude/projects"');
+    expect(command).toContain('mkdir -p "$HOME/.ai-worklog/zcode-spool"');
   });
 
   it.each(["INITIAL", "ROTATE"] as const)(
@@ -245,7 +266,7 @@ describe("buildDeviceSetup", () => {
     const tokenLine = command.indexOf('"AI_WORKLOG_DEVICE_TOKEN=$Token"');
 
     expect(command).toContain(
-      'New-Item -ItemType Directory -Path $CodexPath, $ClaudePath -Force'
+      'New-Item -ItemType Directory -Path $CodexPath, $ClaudePath, $ZcodeSpoolPath -Force'
     );
     expect(inheritance).toBeGreaterThan(-1);
     expect(grant).toBeGreaterThan(inheritance);

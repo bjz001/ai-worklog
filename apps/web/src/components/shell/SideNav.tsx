@@ -50,7 +50,7 @@ export function SideNav() {
       </nav>
       <div className="side-nav__privacy">
         <Icon name="shield" size={18} />
-        <span>原始轨迹完整同步</span>
+        <span>Prompt 原文同步</span>
       </div>
     </aside>
   );

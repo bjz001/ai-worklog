@@ -190,6 +190,23 @@ describe("compatibleStoredEventIdentity", () => {
       )
     ).toBe(false);
   });
+
+  it("accepts a legacy agent USER row when projecting it to a prompt", () => {
+    expect(
+      compatibleStoredEventIdentity(
+        { ...existing, kind: "USER" as const },
+        {
+          deviceId: "device-mac",
+          sessionId: "session-db-id",
+          event: {
+            kind: "USER_PROMPT",
+            sourceMessageId: "stable-message-id",
+            messageIndex: 7
+          }
+        }
+      )
+    ).toBe(true);
+  });
 });
 
 describe("legacy Codex event identity migration", () => {

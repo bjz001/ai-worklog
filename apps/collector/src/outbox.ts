@@ -24,6 +24,11 @@ export interface OutboxStatus {
   total: number;
 }
 
+export interface QuarantineResult {
+  batches: number;
+  blobs: number;
+}
+
 interface BatchRow {
   batch_id: string;
   payload_json: string;
@@ -43,6 +48,34 @@ interface BlobRow {
   media_type: string;
   filename: string | null;
   attempts: number;
+}
+
+interface QuarantineBatchRow extends BatchRow {
+  created_at: string;
+  status: "pending" | "acked";
+  acked_at: string | null;
+  last_error_code: string | null;
+}
+
+interface QuarantineBlobRow extends BlobRow {
+  status: "pending" | "acked";
+  created_at: string;
+  acked_at: string | null;
+  last_error_code: string | null;
+}
+
+function legacyBatchReason(payloadJson: string): string | null {
+  try {
+    const payload = JSON.parse(payloadJson) as { protocolVersion?: unknown };
+    if (payload.protocolVersion === 1) return null;
+    if (payload.protocolVersion === undefined) return "MISSING_PROTOCOL_VERSION";
+    const version = String(payload.protocolVersion)
+      .replace(/[^A-Za-z0-9_.-]/gu, "_")
+      .slice(0, 24);
+    return `PROTOCOL_${version || "UNKNOWN"}`;
+  } catch {
+    return "INVALID_JSON";
+  }
 }
 
 export class Outbox {
@@ -244,6 +277,150 @@ export class Outbox {
       SELECT COUNT(*) AS count FROM outbox_blobs WHERE status = 'pending'
     `).get() as { count: number };
     return row.count;
+  }
+
+  pendingLegacyBatchCount(): number {
+    const rows = this.database.prepare(`
+      SELECT payload_json
+        FROM outbox_batches
+       WHERE status = 'pending'
+    `).all() as Array<{ payload_json: string }>;
+    return rows.filter((row) => legacyBatchReason(row.payload_json) !== null).length;
+  }
+
+  quarantineLegacyPending(): QuarantineResult {
+    const batchRows = this.database.prepare(`
+      SELECT batch_id, created_at, payload_json, payload_sha256,
+             status, attempts, acked_at, last_error_code
+        FROM outbox_batches
+       WHERE status = 'pending'
+       ORDER BY rowid
+    `).all() as QuarantineBatchRow[];
+    const legacyBatches = batchRows
+      .map((row) => ({ row, reason: legacyBatchReason(row.payload_json) }))
+      .filter((entry): entry is { row: QuarantineBatchRow; reason: string } =>
+        entry.reason !== null
+      );
+    const blobRows = this.database.prepare(`
+      SELECT sha256, local_path, byte_length, media_type, filename,
+             status, attempts, created_at, acked_at, last_error_code
+        FROM outbox_blobs
+       WHERE status = 'pending'
+       ORDER BY rowid
+    `).all() as QuarantineBlobRow[];
+
+    const quarantine = this.database.transaction(() => {
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS outbox_batches_quarantine (
+          batch_id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          payload_sha256 TEXT NOT NULL,
+          status TEXT NOT NULL,
+          attempts INTEGER NOT NULL,
+          acked_at TEXT,
+          last_error_code TEXT,
+          quarantined_at TEXT NOT NULL,
+          reason TEXT NOT NULL
+        ) STRICT;
+
+        CREATE TABLE IF NOT EXISTS outbox_blobs_quarantine (
+          sha256 TEXT PRIMARY KEY,
+          local_path TEXT NOT NULL,
+          byte_length INTEGER NOT NULL,
+          media_type TEXT NOT NULL,
+          filename TEXT,
+          status TEXT NOT NULL,
+          attempts INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          acked_at TEXT,
+          last_error_code TEXT,
+          quarantined_at TEXT NOT NULL,
+          reason TEXT NOT NULL
+        ) STRICT;
+      `);
+
+      const quarantinedAt = new Date().toISOString();
+      const insertBatch = this.database.prepare(`
+        INSERT INTO outbox_batches_quarantine (
+          batch_id, created_at, payload_json, payload_sha256, status,
+          attempts, acked_at, last_error_code, quarantined_at, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(batch_id) DO NOTHING
+      `);
+      const existingBatch = this.database.prepare(`
+        SELECT payload_sha256
+          FROM outbox_batches_quarantine
+         WHERE batch_id = ?
+      `);
+      const deleteBatch = this.database.prepare(`
+        DELETE FROM outbox_batches
+         WHERE batch_id = ? AND status = 'pending'
+      `);
+      let batches = 0;
+      for (const { row, reason } of legacyBatches) {
+        const existing = existingBatch.get(row.batch_id) as {
+          payload_sha256: string;
+        } | undefined;
+        if (existing && existing.payload_sha256 !== row.payload_sha256) {
+          throw new Error("Quarantine batch identity collision detected");
+        }
+        insertBatch.run(
+          row.batch_id,
+          row.created_at,
+          row.payload_json,
+          row.payload_sha256,
+          row.status,
+          row.attempts,
+          row.acked_at,
+          row.last_error_code,
+          quarantinedAt,
+          reason
+        );
+        const deleted = deleteBatch.run(row.batch_id);
+        if (deleted.changes !== 1) {
+          throw new Error("Quarantine batch disappeared before it was moved");
+        }
+        batches += 1;
+      }
+
+      const insertBlob = this.database.prepare(`
+        INSERT INTO outbox_blobs_quarantine (
+          sha256, local_path, byte_length, media_type, filename, status,
+          attempts, created_at, acked_at, last_error_code, quarantined_at, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sha256) DO NOTHING
+      `);
+      const deleteBlob = this.database.prepare(`
+        DELETE FROM outbox_blobs
+         WHERE sha256 = ? AND status = 'pending'
+      `);
+      let blobs = 0;
+      for (const row of blobRows) {
+        insertBlob.run(
+          row.sha256,
+          row.local_path,
+          row.byte_length,
+          row.media_type,
+          row.filename,
+          row.status,
+          row.attempts,
+          row.created_at,
+          row.acked_at,
+          row.last_error_code,
+          quarantinedAt,
+          "LEGACY_PENDING_BLOB"
+        );
+        const deleted = deleteBlob.run(row.sha256);
+        if (deleted.changes !== 1) {
+          throw new Error("Quarantine blob disappeared before it was moved");
+        }
+        blobs += 1;
+      }
+      return { batches, blobs };
+    });
+
+    return quarantine();
   }
 
   sourceNeedsPrepare(

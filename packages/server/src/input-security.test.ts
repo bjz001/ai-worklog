@@ -43,6 +43,13 @@ describe("validateSanitizedEvents", () => {
     ).toThrow("not fully redacted");
   });
 
+  it("accepts complete raw Prompt content only when explicitly marked RAW_V1", () => {
+    expect(() => validateSanitizedEvents([{
+      ...event("api_key=FAKE_RAW_PROMPT_CANARY"),
+      redactionVersion: "RAW_V1"
+    }])).not.toThrow();
+  });
+
   it("rejects secrets and unknown fields hidden in metadata", () => {
     expect(() =>
       validateSanitizedEvents([

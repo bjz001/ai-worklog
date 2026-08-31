@@ -1,4 +1,5 @@
 import type {
+  AgentSourceType,
   SyncBatchRequest,
   SyncBatchResult,
   SyncEvent
@@ -144,14 +145,14 @@ export interface EventRow extends RowDataPacket {
   device_id: string;
   session_id: string;
   project_id: string | null;
-  kind: "USER_PROMPT" | "VISIBLE_RESULT";
+  kind: "USER" | "USER_PROMPT" | "VISIBLE_RESULT";
   source_message_id: string | null;
   message_index: number;
   reply_to_event_id: string | null;
   occurred_at: Date;
   current_sanitized_content: string;
   legacy_source_session_id: string;
-  legacy_source_type: "CODEX" | "CLAUDE_CODE";
+  legacy_source_type: AgentSourceType;
   legacy_source_instance_id: string;
 }
 
@@ -179,7 +180,10 @@ export function compatibleStoredEventIdentity(
   return (
     existing.device_id === incoming.deviceId &&
     existing.session_id === incoming.sessionId &&
-    existing.kind === incoming.event.kind &&
+    (
+      existing.kind === incoming.event.kind ||
+      (existing.kind === "USER" && incoming.event.kind === "USER_PROMPT")
+    ) &&
     existing.source_message_id === sourceMessageId &&
     (sourceMessageId !== null ||
       Number(existing.message_index) === incoming.event.messageIndex)
@@ -325,7 +329,7 @@ export function compatibleLegacyStoredEventIdentity(
 const EVENT_ROW_SELECT = `ce.id, ce.account_id, ce.event_id, ce.content_hash,
   ce.current_version, ce.device_id, ce.session_id, ce.project_id, ce.kind,
   ce.source_message_id, ce.message_index, ce.reply_to_event_id,
-  ce.occurred_at, ev.sanitized_content AS current_sanitized_content,
+  ce.occurred_at, COALESCE(ev.sanitized_content, '') AS current_sanitized_content,
   source_session.source_session_id AS legacy_source_session_id,
   source_session.source_type AS legacy_source_type,
   source_session.source_instance_id AS legacy_source_instance_id`;
@@ -338,7 +342,7 @@ async function lockedEventById(
   const [rows] = await connection.execute<EventRow[]>(
     `SELECT ${EVENT_ROW_SELECT}
        FROM collected_events ce
-       JOIN event_versions ev
+       LEFT JOIN event_versions ev
          ON ev.collected_event_id = ce.id
         AND ev.version = ce.current_version
        JOIN sessions source_session
@@ -1071,7 +1075,7 @@ async function ensureSession(options: {
   connection: PoolConnection;
   accountId: string;
   deviceId: string;
-  sourceType: "CODEX" | "CLAUDE_CODE";
+  sourceType: AgentSourceType;
   sourceInstanceId: string;
   parserVersion: string;
   event: SyncEvent;
@@ -1137,7 +1141,7 @@ async function insertNewEvent(options: {
   batchDatabaseId: string;
   sessionId: string;
   projectId: string;
-  sourceType: "CODEX" | "CLAUDE_CODE";
+  sourceType: AgentSourceType;
   parserVersion: string;
   event: SyncEvent;
 }): Promise<void> {
@@ -1238,6 +1242,111 @@ async function insertNewEvent(options: {
       options.sessionId,
       options.projectId,
       occurredAt,
+      options.event.sanitizedContent,
+      options.event.contentHash,
+      modelFrom(options.event)
+    ]
+  );
+}
+
+async function promoteLegacyAgentUserEvent(options: {
+  connection: PoolConnection;
+  accountId: string;
+  deviceId: string;
+  batchDatabaseId: string;
+  sessionId: string;
+  projectId: string;
+  event: SyncEvent;
+  existing: EventRow;
+}): Promise<void> {
+  const [existingVersions] = await options.connection.execute<VersionRow[]>(
+    `SELECT id, version
+       FROM event_versions
+      WHERE account_id = ? AND collected_event_id = ? AND content_hash = ?
+      LIMIT 1`,
+    [options.accountId, options.existing.id, options.event.contentHash]
+  );
+  let version = existingVersions[0]?.version;
+  if (version === undefined) {
+    const [maxRows] = await options.connection.execute<
+      Array<RowDataPacket & { max_version: number }>
+    >(
+      `SELECT COALESCE(MAX(version), 0) AS max_version
+         FROM event_versions
+        WHERE account_id = ? AND collected_event_id = ?`,
+      [options.accountId, options.existing.id]
+    );
+    version = Number(maxRows[0]?.max_version ?? 0) + 1;
+    await options.connection.execute(
+      `INSERT INTO event_versions
+         (id, account_id, collected_event_id, version, content_hash,
+          sanitized_content, parser_version, redaction_version, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        stableDatabaseId(
+          "version",
+          options.existing.id,
+          options.event.contentHash
+        ),
+        options.accountId,
+        options.existing.id,
+        version,
+        options.event.contentHash,
+        options.event.sanitizedContent,
+        "prompt-v1",
+        options.event.redactionVersion,
+        jsonValue(options.event.metadata)
+      ]
+    );
+  }
+
+  await options.connection.execute(
+    `UPDATE collected_events
+        SET sync_batch_id = ?, session_id = ?, project_id = ?, kind = 'USER_PROMPT',
+            source_message_id = ?, message_index = ?, reply_to_event_id = ?,
+            occurred_at = ?, source_time_zone = ?, content_hash = ?,
+            current_version = ?, redaction_version = ?, metadata = ?
+      WHERE id = ? AND account_id = ? AND device_id = ? AND kind = 'USER'`,
+    [
+      options.batchDatabaseId,
+      options.sessionId,
+      options.projectId,
+      options.event.sourceMessageId ?? null,
+      options.event.messageIndex,
+      options.event.replyToEventId ?? null,
+      new Date(options.event.occurredAt),
+      options.event.sourceTimeZone,
+      options.event.contentHash,
+      version,
+      options.event.redactionVersion,
+      jsonValue(options.event.metadata),
+      options.existing.id,
+      options.accountId,
+      options.deviceId
+    ]
+  );
+  await options.connection.execute(
+    `INSERT INTO prompt_entries
+       (id, account_id, collected_event_id, device_id, session_id, project_id,
+        occurred_at, source_time_zone, sanitized_content, content_hash, model)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       session_id = VALUES(session_id),
+       project_id = VALUES(project_id),
+       occurred_at = VALUES(occurred_at),
+       source_time_zone = VALUES(source_time_zone),
+       sanitized_content = VALUES(sanitized_content),
+       content_hash = VALUES(content_hash),
+       model = VALUES(model)`,
+    [
+      stableDatabaseId("prompt", options.existing.id),
+      options.accountId,
+      options.existing.id,
+      options.deviceId,
+      options.sessionId,
+      options.projectId,
+      new Date(options.event.occurredAt),
+      options.event.sourceTimeZone,
       options.event.sanitizedContent,
       options.event.contentHash,
       modelFrom(options.event)
@@ -1506,6 +1615,23 @@ async function commitSyncBatchAttempt(
         event
       })) {
         throw new EventIdentityMismatchError();
+      }
+      if (existing?.kind === "USER" && event.kind === "USER_PROMPT") {
+        await promoteLegacyAgentUserEvent({
+          connection,
+          accountId: options.identity.accountId,
+          deviceId: options.identity.deviceId,
+          batchDatabaseId,
+          sessionId,
+          projectId: project.id,
+          event,
+          existing
+        });
+        changedCount += 1;
+        dirtyWorkDates.add(
+          workDateInTimeZone(event.occurredAt, accountTimeZone)
+        );
+        continue;
       }
       const [versionRows] = existing
         ? await connection.execute<VersionRow[]>(

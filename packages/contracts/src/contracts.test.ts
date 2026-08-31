@@ -73,6 +73,35 @@ describe("device enrollment contracts", () => {
 });
 
 describe("SyncBatchRequestSchema", () => {
+  it.each(["ZCODE", "DSH"] as const)("accepts %s as a Prompt source", (source) => {
+    const result = SyncBatchRequestSchema.safeParse({
+      ...{
+        protocolVersion: 1,
+        batchId: "batch-1",
+        createdAt: "2026-07-14T10:00:00.000Z",
+        source: {
+          type: source,
+          instanceId: "source-device",
+          parserVersion: "prompt-v1"
+        },
+        events: [{
+          eventId: "a".repeat(64),
+          kind: "USER_PROMPT",
+          sourceSessionId: "session",
+          sourceMessageId: "message-1",
+          messageIndex: 0,
+          occurredAt: "2026-07-14T10:00:00.000Z",
+          sourceTimeZone: "UTC",
+          sanitizedContent: "raw prompt",
+          contentHash: "b".repeat(64),
+          redactionVersion: "RAW_V1",
+          metadata: {}
+        }]
+      }
+    });
+
+    expect(result.success).toBe(true);
+  });
   it("rejects oversized batches", () => {
     const events = Array.from({ length: 201 }, (_, index) => ({
       eventId: "a".repeat(64),

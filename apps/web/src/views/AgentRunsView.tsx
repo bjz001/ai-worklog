@@ -169,7 +169,7 @@ export function AgentRunsView() {
       {state === "error" && error ? <ErrorState error={error} onRetry={reload} /> : null}
       {state === "empty" ? (
         <EmptyState
-          description={hasFilters ? "当前筛选条件下没有轨迹，请调整关键词或筛选。" : "运行 v2 采集后，四类 Agent 的完整事件会进入这里。"}
+          description={hasFilters ? "当前筛选条件下没有 Prompt，请调整关键词或筛选。" : "运行采集器后，四类 Agent 的用户 Prompt 会进入这里。"}
           icon="prompt"
           title={hasFilters ? "没有匹配的 Agent 轨迹" : "Agent 轨迹为空"}
         />

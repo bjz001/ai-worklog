@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { SyncEvent } from "@ai-worklog/contracts";
+import { MAX_SYNC_EVENT_CONTENT_BYTES, type SyncEvent } from "@ai-worklog/contracts";
 import {
   buildEventId,
   normalizeGitRemote,
@@ -10,13 +10,16 @@ import type { NormalizedPromptSession, PromptConnector } from "./prompt-connecto
 import { readJsonlRecords, type JsonRecord } from "./jsonl-reader.js";
 import { resolveLocalProjectIdentity } from "./git-project.js";
 
-const MAX_CONTENT_LENGTH = 131_072;
+const MAX_CONTENT_LENGTH = MAX_SYNC_EVENT_CONTENT_BYTES;
+
+export type PromptCaptureMode = "legacy" | "raw-prompts";
 
 interface CodexConnectorOptions {
   accountId: string;
   deviceId: string;
   sourceInstanceId: string;
   pathHmacKey?: string;
+  captureMode?: PromptCaptureMode;
 }
 
 interface SessionMeta {
@@ -142,6 +145,7 @@ export class CodexConnector implements PromptConnector {
   private readonly accountId: string;
   private readonly deviceId: string;
   private readonly pathHmacKey: string;
+  private readonly captureMode: PromptCaptureMode;
   private readonly projectCache = new Map<string, Promise<Awaited<ReturnType<typeof resolveLocalProjectIdentity>>>>();
 
   constructor(options: CodexConnectorOptions) {
@@ -150,6 +154,7 @@ export class CodexConnector implements PromptConnector {
     this.sourceInstanceId = options.sourceInstanceId;
     this.pathHmacKey = options.pathHmacKey
       ?? sha256Hex(`path-key-v1\u001f${options.accountId}\u001f${options.deviceId}`);
+    this.captureMode = options.captureMode ?? "legacy";
   }
 
   async readFile(filePath: string): Promise<NormalizedCodexSession> {
@@ -257,16 +262,20 @@ export class CodexConnector implements PromptConnector {
       }
     }
 
-    const selected = this.selectVisibleCandidates(
-      responseCandidates,
-      eventCandidates,
-      firstMeta
-    );
+    const rawUserEvents = eventCandidates.filter((candidate) => candidate.role === "user");
+    const selected = this.captureMode === "raw-prompts"
+      ? rawUserEvents.length > 0
+        ? rawUserEvents
+        : responseCandidates.filter((candidate) => candidate.role === "user")
+      : this.selectVisibleCandidates(responseCandidates, eventCandidates, firstMeta);
     const events: SyncEvent[] = [];
     const previousUserBySession = new Map<string, string>();
     for (const candidate of selected) {
+      if (this.captureMode === "raw-prompts" && candidate.role !== "user") continue;
       const eventId = this.eventIdForCandidate(candidate);
-      const sanitizedContent = redactSensitiveText(candidate.content);
+      const sanitizedContent = this.captureMode === "raw-prompts"
+        ? candidate.content
+        : redactSensitiveText(candidate.content);
       const kind = candidate.role === "user"
         ? "USER_PROMPT" as const
         : "VISIBLE_RESULT" as const;
@@ -285,9 +294,13 @@ export class CodexConnector implements PromptConnector {
         sourceTimeZone: candidate.sessionMeta.sourceTimeZone,
         sanitizedContent,
         contentHash: sha256Hex(sanitizedContent),
-        redactionVersion: "core-v1",
-        projectHint: await this.projectHint(candidate.sessionMeta),
-        metadata: candidate.metadata
+        redactionVersion: this.captureMode === "raw-prompts" ? "RAW_V1" : "core-v1",
+        ...(this.captureMode === "legacy"
+          ? {
+              projectHint: await this.projectHint(candidate.sessionMeta),
+              metadata: candidate.metadata
+            }
+          : { metadata: {} })
       });
 
       if (kind === "USER_PROMPT") {

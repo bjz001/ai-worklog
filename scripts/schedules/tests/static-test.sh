@@ -116,13 +116,12 @@ grep -Fq '"CLAUDE_CODE_SOURCE_PATH"' "$windows_runner"
 grep -Fq '"AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP"' "$windows_runner"
 grep -Fq '"NODE_EXTRA_CA_CERTS"' "$windows_runner"
 grep -Fq 'Test-PrivateIPv4' "$windows_runner"
+grep -Fq '[switch]$QuarantineLegacy' "$windows_runner"
+grep -Fq '[switch]$Status' "$windows_runner"
+grep -Fq '"quarantine-legacy"' "$windows_runner"
+grep -Fq '"status"' "$windows_runner"
 windows_phase_patterns=(
-  '-LogPhase "prepare-codex" -SourceType "CODEX"'
-  '-LogPhase "prepare-claude-code" -SourceType "CLAUDE_CODE"'
-  '-LogPhase "prepare-v2-codex" -SourceType "CODEX"'
-  '-LogPhase "prepare-v2-claude-code" -SourceType "CLAUDE_CODE"'
-  '-LogPhase "prepare-v2-zcode" -SourceType "ZCODE"'
-  '-LogPhase "prepare-v2-dsh" -SourceType "DSH"'
+  '-LogPhase "prepare-prompts" -SourceType ""'
   '-LogPhase "sync" -SourceType ""'
 )
 for pattern in "${windows_phase_patterns[@]}"; do
@@ -142,11 +141,12 @@ if grep -Eqi "NODE_TLS_REJECT_UNAUTHORIZED[^\r\n]*[=:][[:space:]]*0|rejectUnauth
   exit 1
 fi
 
-grep -Fq 'AI_WORKLOG_PROTOCOL_VERSION=2' "$SCHEDULE_ROOT/collector.env.example"
+grep -Fq 'AI_WORKLOG_PROTOCOL_VERSION=1' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'ZCODE_HOOK_SPOOL' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'DSH_HOME' "$SCHEDULE_ROOT/collector.env.example"
 grep -Fq 'AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP=false' "$SCHEDULE_ROOT/collector.env.example"
-grep -Fq '四个隔离的 Node 进程' "$PROJECT_ROOT/README_SCHEDULES.md"
+grep -Fq '自动探测并准备 Codex、Claude Code、ZCode、DSH 四类来源' "$PROJECT_ROOT/README_SCHEDULES.md"
+grep -Fq 'quarantine-legacy' "$PROJECT_ROOT/apps/collector/src/cli.ts"
 
 if grep -Eq '(^|[[:space:]])source[[:space:]]|eval[[:space:]]' "$SCHEDULE_ROOT/macos/run.sh"; then
   printf 'macOS runner must parse, not execute, its config file\n' >&2
@@ -205,7 +205,7 @@ chmod 700 "$fake_node"
 cat >"$config" <<'CONFIG'
 AI_WORKLOG_ACCOUNT_ID=account-test
 AI_WORKLOG_DEVICE_ID=device-test
-AI_WORKLOG_PROTOCOL_VERSION=2
+AI_WORKLOG_PROTOCOL_VERSION=1
 CODEX_SOURCE_INSTANCE_ID=codex-test
 CLAUDE_CODE_SOURCE_INSTANCE_ID=claude-code-test
 AI_WORKLOG_SYNC_URL=https://example.invalid/api/v1/sync/batches
@@ -251,12 +251,10 @@ run_output="$(HOME="$temporary_directory/home" \
   printf 'scheduled run exposed the device token\n' >&2
   exit 1
 }
-for phase in prepare-v2-codex prepare-v2-claude-code prepare-v2-zcode prepare-v2-dsh; do
-  [[ "$run_output" == *"\"phase\":\"$phase\",\"status\":\"ok\""* ]] || {
-    printf 'scheduled run did not isolate protocol v2 Agent source processes\n' >&2
-    exit 1
-  }
-done
+[[ "$run_output" == *'"phase":"prepare-prompts","status":"ok"'* ]] || {
+  printf 'scheduled run did not prepare the raw Prompt sources\n' >&2
+  exit 1
+}
 [[ "$run_output" == *'"phase":"sync","status":"ok"'* ]] || {
   printf 'scheduled run did not sync after preparing\n' >&2
   exit 1
@@ -269,26 +267,10 @@ done
   printf 'scheduled run did not preserve its reusable lock file\n' >&2
   exit 1
 }
-expected_calls=$'CODEX:prepare\nCLAUDE_CODE:prepare\nZCODE:prepare\nDSH:prepare\nunset:sync'
+expected_calls=$'unset:prepare\nunset:sync'
 actual_calls="$(cat "$capture_path")"
 [[ "$actual_calls" == "$expected_calls" ]] || {
   printf 'collector phases did not run exactly once in auto-prepare, sync order\n' >&2
-  exit 1
-}
-
-v1_config="$temporary_directory/protocol-v1.env"
-sed 's/AI_WORKLOG_PROTOCOL_VERSION=2/AI_WORKLOG_PROTOCOL_VERSION=1/' \
-  "$config" >"$v1_config"
-chmod 600 "$v1_config"
-: >"$capture_path"
-v1_output="$(HOME="$temporary_directory/home" \
-  SCHEDULE_CAPTURE_PATH="$capture_path" \
-  bash "$SCHEDULE_ROOT/macos/run.sh" --config "$v1_config" 2>&1)"
-v1_expected_calls=$'CODEX:prepare\nCLAUDE_CODE:prepare\nunset:sync'
-[[ "$(cat "$capture_path")" == "$v1_expected_calls" \
-  && "$v1_output" == *'"phase":"prepare-codex","status":"ok"'* \
-  && "$v1_output" == *'"phase":"prepare-claude-code","status":"ok"'* ]] || {
-  printf 'protocol v1 rollback did not preserve the legacy prepare order\n' >&2
   exit 1
 }
 
@@ -329,8 +311,7 @@ partial_calls="$(cat "$capture_path")"
   printf 'a failed auto-prepare prevented Outbox sync\n' >&2
   exit 1
 }
-grep -q '"phase":"prepare-v2-codex","status":"failed"' "$temporary_directory/partial.out"
-grep -q '"phase":"prepare-v2-dsh","status":"failed"' "$temporary_directory/partial.out"
+grep -q '"phase":"prepare-prompts","status":"failed"' "$temporary_directory/partial.out"
 grep -q '"phase":"sync","status":"ok"' "$temporary_directory/partial.out"
 grep -q '"phase":"schedule","status":"partial"' "$temporary_directory/partial.out"
 

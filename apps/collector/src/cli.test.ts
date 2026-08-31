@@ -18,7 +18,7 @@ const fixturesRoot = fileURLToPath(new URL("../../../fixtures/codex/", import.me
 const claudeFixturesRoot = fileURLToPath(new URL("../../../fixtures/claude/", import.meta.url));
 
 describe("collector CLI", () => {
-  it.each(["prepare", "sync", "status", "run-fixtures"] as const)(
+  it.each(["prepare", "sync", "status", "run-fixtures", "quarantine-legacy"] as const)(
     "accepts the %s command",
     (command) => {
       expect(parseCommand([command]).command).toBe(command);
@@ -29,7 +29,7 @@ describe("collector CLI", () => {
     expect(() => parseCommand(["unknown", "fixture-device-token"])).toThrow("Unknown command: unknown");
   });
 
-  it("accepts a v2 source limiter and advances an unchanged-source cursor", async () => {
+  it("defaults to raw Prompt-only v1 and advances an unchanged-source cursor", async () => {
     const directory = mkdtempSync(join(tmpdir(), "collector-cli-v2-"));
     const databasePath = join(directory, "collector.sqlite");
     const output: string[] = [];
@@ -58,11 +58,18 @@ describe("collector CLI", () => {
     const payloads = outbox.listPending(100).map((batch) => batch.payloadJson);
     outbox.close();
 
-    expect(payloads[0]).toContain('"protocolVersion":2');
+    expect(payloads[0]).toContain('"protocolVersion":1');
     expect(payloads.join("\n")).toContain("FAKE_TEST_SECRET_CANARY_1234567890");
     expect(payloads.join("\n")).not.toContain("[REDACTED]");
+    expect(payloads.join("\n")).not.toContain("VISIBLE_RESULT");
+    const batch = JSON.parse(payloads[0] ?? "{}") as {
+      events?: Array<Record<string, unknown>>;
+    };
+    expect(batch.events).toHaveLength(1);
+    expect(batch.events?.[0]).toMatchObject({ metadata: {} });
+    expect(batch.events?.[0]).not.toHaveProperty("projectHint");
     expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
-      protocolVersion: 2,
+      protocolVersion: 1,
       sourceType: "CODEX",
       scanned: 1,
       failedFiles: 0
@@ -72,6 +79,19 @@ describe("collector CLI", () => {
       skippedFiles: 1,
       inserted: 0
     });
+  });
+
+  it("rejects the disabled Agent trajectory protocol", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-disabled-v2-"));
+    await expect(runCli(["prepare"], {
+      env: {
+        COLLECTOR_DB_PATH: join(directory, "collector.sqlite"),
+        AI_WORKLOG_ACCOUNT_ID: "account-1",
+        AI_WORKLOG_DEVICE_ID: "device-1",
+        AI_WORKLOG_PROTOCOL_VERSION: "2"
+      },
+      write: () => undefined
+    })).rejects.toThrow("Agent trajectory collection is disabled");
   });
 
   it("runs both platform fixtures and reports counts without exposing a configured token", async () => {
@@ -117,6 +137,49 @@ describe("collector CLI", () => {
     ]);
   });
 
+  it("quarantines legacy pending data without uploading or deleting the local Blob", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-quarantine-"));
+    const databasePath = join(directory, "collector.sqlite");
+    const blobPath = join(directory, "legacy.txt");
+    const blobContent = Buffer.from("legacy pending blob");
+    writeFileSync(blobPath, blobContent);
+    const legacyPayload = JSON.stringify({ protocolVersion: 2, events: [{ kind: "RUN" }] });
+    const outbox = new Outbox(databasePath);
+    outbox.enqueue({
+      batchId: "c".repeat(64),
+      createdAt: "2026-08-31T00:00:00.000Z",
+      payloadJson: legacyPayload,
+      payloadSha256: createHash("sha256").update(legacyPayload).digest("hex")
+    });
+    outbox.enqueueBlob({
+      sha256: createHash("sha256").update(blobContent).digest("hex"),
+      localPath: blobPath,
+      byteLength: blobContent.byteLength,
+      mediaType: "text/plain",
+      filename: "legacy.txt"
+    });
+    outbox.close();
+    const output: string[] = [];
+
+    await runCli(["quarantine-legacy"], {
+      env: { COLLECTOR_DB_PATH: databasePath },
+      write: (line) => output.push(line)
+    });
+
+    const inspected = new Outbox(databasePath);
+    expect(inspected.status()).toEqual({ pending: 0, acked: 0, total: 0 });
+    expect(inspected.pendingBlobCount()).toBe(0);
+    inspected.close();
+    expect(readFileSync(blobPath)).toEqual(blobContent);
+    expect(output).toEqual([
+      JSON.stringify({
+        command: "quarantine-legacy",
+        quarantinedBatches: 1,
+        quarantinedBlobs: 1
+      })
+    ]);
+  });
+
   it("passes the explicit private-LAN HTTP opt-in to sync", async () => {
     const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
     const databasePath = join(directory, "collector.sqlite");
@@ -147,7 +210,7 @@ describe("collector CLI", () => {
     ]);
   });
 
-  it("selects the Claude Code connector for prepare through AI_WORKLOG_SOURCE_TYPE", async () => {
+  it("selects the Claude Code prompt connector for prepare through AI_WORKLOG_SOURCE_TYPE", async () => {
     const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
     const databasePath = join(directory, "collector.sqlite");
     const output: string[] = [];
@@ -171,22 +234,30 @@ describe("collector CLI", () => {
     outbox.close();
     expect(payload).toContain('"type":"CLAUDE_CODE"');
     expect(payload).toContain('"parserVersion":"claude-code-jsonl-v2"');
+    expect(payload).toContain("FAKE_CLAUDE_SECRET_CANARY_1234567890");
+    expect(payload).not.toContain("[REDACTED]");
+    const batch = JSON.parse(payload) as {
+      events?: Array<Record<string, unknown>>;
+    };
+    expect(batch.events).toHaveLength(1);
+    expect(batch.events?.[0]).toMatchObject({ metadata: {} });
+    expect(batch.events?.[0]).not.toHaveProperty("projectHint");
     expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
       command: "prepare",
       status: "complete",
       scanned: 1,
       inserted: 1,
-      events: 2,
+      events: 1,
       sourceType: "CLAUDE_CODE"
     });
   });
 
-  it("keeps Codex as the default prepare connector", async () => {
+  it("selects the Codex prompt connector for prepare", async () => {
     const directory = mkdtempSync(join(tmpdir(), "collector-cli-"));
     const databasePath = join(directory, "collector.sqlite");
     const output: string[] = [];
 
-    await runCli(["prepare"], {
+    await runCli(["prepare", "--source=CODEX"], {
       env: {
         COLLECTOR_DB_PATH: databasePath,
         AI_WORKLOG_ACCOUNT_ID: "account-1",
@@ -217,7 +288,7 @@ describe("collector CLI", () => {
       CODEX_SOURCE_INSTANCE_ID: "windows-codex",
       CODEX_SOURCE_PATH: resolve(fixturesRoot, "windows/session.jsonl")
     };
-    await runCli(["prepare"], {
+    await runCli(["prepare", "--source=CODEX"], {
       env: sharedEnvironment,
       write: () => undefined
     });
@@ -259,19 +330,20 @@ describe("collector CLI", () => {
     }
   });
 
-  it("uploads pending Blobs even when an event batch remains unacknowledged", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "collector-cli-blob-backlog-"));
+  it("blocks sync while legacy batches or Blobs remain outside quarantine", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-cli-quarantine-guard-"));
     const databasePath = join(directory, "collector.sqlite");
-    const blobPath = join(directory, "attachment.txt");
-    const blobContent = Buffer.from("pending attachment");
+    const blobPath = join(directory, "legacy-attachment.txt");
+    const blobContent = Buffer.from("legacy pending attachment");
     const blobSha256 = createHash("sha256").update(blobContent).digest("hex");
     writeFileSync(blobPath, blobContent);
+    const legacyPayload = JSON.stringify({ protocolVersion: 2, events: [{ kind: "RUN" }] });
     const outbox = new Outbox(databasePath);
     outbox.enqueue({
       batchId: "a".repeat(64),
       createdAt: "2026-08-24T00:00:00.000Z",
-      payloadJson: "{}",
-      payloadSha256: createHash("sha256").update("{}").digest("hex")
+      payloadJson: legacyPayload,
+      payloadSha256: createHash("sha256").update(legacyPayload).digest("hex")
     });
     outbox.enqueueBlob({
       sha256: blobSha256,
@@ -281,68 +353,26 @@ describe("collector CLI", () => {
       filename: "attachment.txt"
     });
     outbox.close();
-
-    const server = createServer((request, response) => {
-      if (request.method === "POST" && request.url?.endsWith("/batches")) {
-        response.writeHead(422, { "content-type": "application/json" });
-        response.end(JSON.stringify({
-          error: {
-            code: "AGENT_PAYLOAD_INTEGRITY_ERROR",
-            message: "synthetic integrity failure",
-            retryable: false,
-            requestId: "request-integrity"
-          }
-        }));
-        return;
-      }
-      if (request.method === "PUT" && request.url?.endsWith(`/blobs/${blobSha256}`)) {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({
-          data: {
-            sha256: blobSha256,
-            status: "COMPLETE",
-            chunkSize: 1024 * 1024,
-            chunkCount: 1,
-            receivedChunks: [0]
-          }
-        }));
-        return;
-      }
-      response.writeHead(404).end();
-    });
-    await new Promise<void>((resolveListen) =>
-      server.listen(0, "127.0.0.1", resolveListen)
-    );
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("test server did not bind");
     const output: string[] = [];
 
-    try {
-      await expect(runCli(["sync"], {
-        env: {
-          COLLECTOR_DB_PATH: databasePath,
-          AI_WORKLOG_SYNC_URL: `http://127.0.0.1:${address.port}/api/v1/sync/batches`,
-          AI_WORKLOG_DEVICE_TOKEN: "fixture-device-token"
-        },
-        write: (line) => output.push(line)
-      })).rejects.toThrow("SYNC_INCOMPLETE");
+    await expect(runCli(["sync"], {
+      env: { COLLECTOR_DB_PATH: databasePath },
+      write: (line) => output.push(line)
+    })).rejects.toThrow("LEGACY_OUTBOX_REQUIRES_QUARANTINE");
 
-      const inspected = new Outbox(databasePath);
-      expect(inspected.status().pending).toBe(1);
-      expect(inspected.pendingBlobCount()).toBe(0);
-      inspected.close();
-      expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
-        failed: 1,
-        remainingPending: 1,
-        blobAttempted: 1,
-        blobAcked: 1,
-        remainingPendingBlobs: 0
-      });
-    } finally {
-      await new Promise<void>((resolveClose, rejectClose) =>
-        server.close((error) => error ? rejectClose(error) : resolveClose())
-      );
-    }
+    const inspected = new Outbox(databasePath);
+    expect(inspected.status().pending).toBe(1);
+    expect(inspected.pendingBlobCount()).toBe(1);
+    inspected.close();
+    expect(readFileSync(blobPath)).toEqual(blobContent);
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
+      command: "sync",
+      status: "blocked",
+      errorCode: "LEGACY_OUTBOX_REQUIRES_QUARANTINE",
+      pendingLegacyBatches: 1,
+      remainingPending: 1,
+      remainingPendingBlobs: 1
+    });
   });
 
   it("queues healthy files while isolating empty, malformed, and oversized files", async () => {
@@ -367,7 +397,7 @@ describe("collector CLI", () => {
     truncateSync(oversizedPath, 256 * 1024 * 1024 + 1);
     const output: string[] = [];
 
-    await expect(runCli(["prepare"], {
+    await expect(runCli(["prepare", "--source=CODEX"], {
       env: {
         COLLECTOR_DB_PATH: databasePath,
         AI_WORKLOG_ACCOUNT_ID: "account-1",

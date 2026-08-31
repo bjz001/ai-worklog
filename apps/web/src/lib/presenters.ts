@@ -1,3 +1,5 @@
+import type { AgentSourceType } from "@ai-worklog/contracts";
+
 export type Tone = "neutral" | "info" | "success" | "warning" | "danger";
 
 export type DeviceStatus =
@@ -47,8 +49,13 @@ export function formatWorkDate(value: string): string {
   }).format(date);
 }
 
-export function formatSource(source: "CODEX" | "CLAUDE_CODE"): string {
-  return source === "CODEX" ? "Codex" : "Claude Code";
+export function formatSource(source: AgentSourceType): string {
+  return {
+    CODEX: "Codex",
+    CLAUDE_CODE: "Claude Code",
+    ZCODE: "ZCode",
+    DSH: "DSH"
+  }[source];
 }
 
 export function deviceStatusMeta(status: DeviceStatus): {

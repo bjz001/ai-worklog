@@ -1,21 +1,15 @@
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentSourceType } from "@ai-worklog/contracts";
-import { prepareAgentCapture } from "./agent-prepare.js";
 import {
-  collectorBlobRoot,
-  createAgentConnectorRegistry,
+  createPromptConnectorRegistry,
   parseAgentSourceSelection
 } from "./agent-source-registry.js";
-import { stageCaptureAttachments } from "./attachment-capture.js";
 import { syncPendingBlobs } from "./blob-sync-client.js";
-import { ClaudeCodeConnector } from "./claude-connector.js";
 import { CodexConnector } from "./codex-connector.js";
 import { Outbox } from "./outbox.js";
 import { prepareFile } from "./prepare.js";
-import type { PromptConnector, PromptSourceType } from "./prompt-connector.js";
-import { discoverPromptFiles } from "./source-files.js";
 import { syncPending } from "./sync-client.js";
 import { installZcodeHook } from "./zcode-hook-installer.js";
 
@@ -23,6 +17,7 @@ export const COMMANDS = [
   "prepare",
   "sync",
   "status",
+  "quarantine-legacy",
   "run-fixtures",
   "install-zcode-hook"
 ] as const;
@@ -50,43 +45,6 @@ function allowInsecureLanHttp(env: Record<string, string | undefined>): boolean 
   if (value === "" || value === "false") return false;
   if (value === "true") return true;
   throw new Error("AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP must be true or false");
-}
-
-function configuredSourceType(env: Record<string, string | undefined>): PromptSourceType {
-  const value = env.AI_WORKLOG_SOURCE_TYPE?.trim().toUpperCase() || "CODEX";
-  if (value === "CODEX" || value === "CLAUDE_CODE") return value;
-  throw new Error("Unsupported AI_WORKLOG_SOURCE_TYPE; expected CODEX or CLAUDE_CODE");
-}
-
-function createConfiguredConnector(
-  env: Record<string, string | undefined>
-): { connector: PromptConnector; sourcePath: string; sourceLabel: string } {
-  const sourceType = configuredSourceType(env);
-  const shared = {
-    accountId: requiredEnv(env, "AI_WORKLOG_ACCOUNT_ID"),
-    deviceId: requiredEnv(env, "AI_WORKLOG_DEVICE_ID"),
-    pathHmacKey: env.AI_WORKLOG_PATH_HMAC_KEY
-  };
-
-  if (sourceType === "CLAUDE_CODE") {
-    return {
-      connector: new ClaudeCodeConnector({
-        ...shared,
-        sourceInstanceId: requiredEnv(env, "CLAUDE_CODE_SOURCE_INSTANCE_ID")
-      }),
-      sourcePath: requiredEnv(env, "CLAUDE_CODE_SOURCE_PATH"),
-      sourceLabel: "Claude Code"
-    };
-  }
-
-  return {
-    connector: new CodexConnector({
-      ...shared,
-      sourceInstanceId: requiredEnv(env, "CODEX_SOURCE_INSTANCE_ID")
-    }),
-    sourcePath: requiredEnv(env, "CODEX_SOURCE_PATH"),
-    sourceLabel: "Codex"
-  };
 }
 
 export function parseCommand(argv: string[]): {
@@ -132,85 +90,29 @@ export function parseCommand(argv: string[]): {
 
 async function runPrepareV1(
   env: Record<string, string | undefined>,
-  write: (line: string) => void
-): Promise<void> {
-  const outbox = new Outbox(databasePath(env));
-  try {
-    const { connector, sourcePath, sourceLabel } = createConfiguredConnector(env);
-    const files = await discoverPromptFiles(sourcePath, sourceLabel);
-    let inserted = 0;
-    let events = 0;
-    let skippedFiles = 0;
-    let failedFiles = 0;
-    for (const filePath of files) {
-      try {
-        const result = await prepareFile({ connector, outbox, filePath });
-        inserted += result.insertedCount;
-        events += result.eventCount;
-        if (result.eventCount === 0) skippedFiles += 1;
-      } catch {
-        failedFiles += 1;
-      }
-    }
-    write(JSON.stringify({
-      command: "prepare",
-      sourceType: connector.sourceType,
-      status: failedFiles > 0 ? "partial" : "complete",
-      scanned: files.length,
-      inserted,
-      events,
-      skippedFiles,
-      failedFiles
-    }));
-    if (failedFiles > 0) throw new Error("PREPARE_PARTIAL");
-  } finally {
-    outbox.close();
-  }
-}
-
-function protocolVersion(env: Record<string, string | undefined>): 1 | 2 {
-  const value = env.AI_WORKLOG_PROTOCOL_VERSION?.trim() || "2";
-  if (value === "1") return 1;
-  if (value === "2") return 2;
-  throw new Error("AI_WORKLOG_PROTOCOL_VERSION must be 1 or 2");
-}
-
-function captureCwd(
-  records: readonly { recordType: string; cwd?: string | null }[],
-  candidatePath: string
-): string {
-  const run = records.find((record) => record.recordType === "RUN");
-  return run?.cwd || dirname(candidatePath);
-}
-
-async function runPrepareV2(
-  env: Record<string, string | undefined>,
   write: (line: string) => void,
   selectedSource: AgentSourceType | undefined,
   forceHistory: boolean
 ): Promise<void> {
-  const outboxPath = databasePath(env);
-  const outbox = new Outbox(outboxPath);
+  const outbox = new Outbox(databasePath(env));
   try {
     const accountId = requiredEnv(env, "AI_WORKLOG_ACCOUNT_ID");
     const deviceId = requiredEnv(env, "AI_WORKLOG_DEVICE_ID");
     const selected = selectedSource ?? (env.AI_WORKLOG_SOURCE_TYPE
       ? parseAgentSourceSelection(env.AI_WORKLOG_SOURCE_TYPE)
       : undefined);
-    const registry = await createAgentConnectorRegistry({
+    const registry = await createPromptConnectorRegistry({
       env,
       accountId,
       deviceId,
       ...(selected ? { selectedSource: selected } : {})
     });
-    const blobRoot = collectorBlobRoot(env, outboxPath);
+    const sourceTypes: AgentSourceType[] = [];
     let scanned = 0;
     let inserted = 0;
     let events = 0;
-    let records = 0;
     let skippedFiles = 0;
     let failedFiles = 0;
-    const sourceTypes: AgentSourceType[] = [];
     for (const entry of registry) {
       sourceTypes.push(entry.connector.sourceType);
       for (const candidate of entry.candidates) {
@@ -227,20 +129,14 @@ async function runPrepareV2(
           continue;
         }
         try {
-          const captures = await entry.connector.readSource(candidate.path);
-          if (captures.length === 0) skippedFiles += 1;
-          for (const capture of captures) {
-            const staged = await stageCaptureAttachments({
-              capture,
-              outbox,
-              blobRoot,
-              cwd: captureCwd(capture.records, candidate.path)
-            });
-            const result = prepareAgentCapture({ capture: staged, outbox });
-            inserted += result.insertedCount;
-            events += result.eventCount;
-            records += result.recordCount;
-          }
+          const result = await prepareFile({
+            connector: entry.connector,
+            outbox,
+            filePath: candidate.path
+          });
+          inserted += result.insertedCount;
+          events += result.eventCount;
+          if (result.eventCount === 0) skippedFiles += 1;
           outbox.markSourcePrepared(
             entry.connector.sourceType,
             candidate.path,
@@ -253,15 +149,13 @@ async function runPrepareV2(
     }
     write(JSON.stringify({
       command: "prepare",
-      protocolVersion: 2,
+      protocolVersion: 1,
       sourceTypes,
       ...(sourceTypes.length === 1 ? { sourceType: sourceTypes[0] } : {}),
       status: failedFiles > 0 ? "partial" : "complete",
       scanned,
       inserted,
       events,
-      records,
-      pendingBlobs: outbox.pendingBlobCount(),
       skippedFiles,
       failedFiles
     }));
@@ -271,12 +165,38 @@ async function runPrepareV2(
   }
 }
 
+function protocolVersion(env: Record<string, string | undefined>): 1 {
+  const value = env.AI_WORKLOG_PROTOCOL_VERSION?.trim() || "1";
+  if (value === "1") return 1;
+  throw new Error("AI_WORKLOG_PROTOCOL_VERSION must be 1; Agent trajectory collection is disabled");
+}
+
 async function runSync(
   env: Record<string, string | undefined>,
   write: (line: string) => void
 ): Promise<void> {
   const outbox = new Outbox(databasePath(env));
   try {
+    const pendingLegacyBatches = outbox.pendingLegacyBatchCount();
+    const pendingBlobCount = outbox.pendingBlobCount();
+    if (pendingLegacyBatches > 0 || pendingBlobCount > 0) {
+      const remainingPending = outbox.status().pending;
+      write(JSON.stringify({
+        command: "sync",
+        status: "blocked",
+        errorCode: "LEGACY_OUTBOX_REQUIRES_QUARANTINE",
+        pendingLegacyBatches,
+        attempted: 0,
+        acked: 0,
+        failed: 1,
+        remainingPending,
+        blobAttempted: 0,
+        blobAcked: 0,
+        blobFailed: 0,
+        remainingPendingBlobs: pendingBlobCount
+      }));
+      throw new Error("LEGACY_OUTBOX_REQUIRES_QUARANTINE");
+    }
     const endpoint = requiredEnv(env, "AI_WORKLOG_SYNC_URL");
     const token = requiredEnv(env, "AI_WORKLOG_DEVICE_TOKEN");
     const result = { attempted: 0, acked: 0, failed: 0 };
@@ -355,6 +275,23 @@ async function runStatus(
   }
 }
 
+function runQuarantineLegacy(
+  env: Record<string, string | undefined>,
+  write: (line: string) => void
+): void {
+  const outbox = new Outbox(databasePath(env));
+  try {
+    const result = outbox.quarantineLegacyPending();
+    write(JSON.stringify({
+      command: "quarantine-legacy",
+      quarantinedBatches: result.batches,
+      quarantinedBlobs: result.blobs
+    }));
+  } finally {
+    outbox.close();
+  }
+}
+
 async function runInstallZcodeHook(
   env: Record<string, string | undefined>,
   write: (line: string) => void
@@ -400,7 +337,8 @@ async function runFixtures(
         accountId,
         deviceId: fixture.deviceId,
         sourceInstanceId: fixture.sourceInstanceId,
-        pathHmacKey: env.AI_WORKLOG_PATH_HMAC_KEY || "fixture-path-hmac-key"
+        pathHmacKey: env.AI_WORKLOG_PATH_HMAC_KEY || "fixture-path-hmac-key",
+        captureMode: "raw-prompts"
       });
       const result = await prepareFile({
         connector,
@@ -427,12 +365,15 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
   const parsed = parseCommand(argv);
   const { command } = parsed;
   if (command === "prepare") {
-    return protocolVersion(env) === 1
-      ? runPrepareV1(env, write)
-      : runPrepareV2(env, write, parsed.source, parsed.forceHistory);
+    protocolVersion(env);
+    return runPrepareV1(env, write, parsed.source, parsed.forceHistory);
   }
   if (command === "sync") return runSync(env, write);
   if (command === "status") return runStatus(env, write);
+  if (command === "quarantine-legacy") {
+    runQuarantineLegacy(env, write);
+    return;
+  }
   if (command === "install-zcode-hook") return runInstallZcodeHook(env, write);
   return runFixtures(env, write);
 }

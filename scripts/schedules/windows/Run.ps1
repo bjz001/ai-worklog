@@ -2,7 +2,9 @@
 param(
     [string]$ConfigPath = (Join-Path $env:LOCALAPPDATA "AIWorklog\collector.env"),
     [switch]$DryRun,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [switch]$QuarantineLegacy,
+    [switch]$Status
 )
 
 Set-StrictMode -Version 3.0
@@ -184,27 +186,33 @@ function Test-PrivateIPv4 {
 }
 
 function Assert-RequiredConfig {
+    param([switch]$LocalOnly)
+
     $requiredKeys = @(
         "AI_WORKLOG_ACCOUNT_ID",
         "AI_WORKLOG_DEVICE_ID",
         "AI_WORKLOG_SYNC_URL",
         "AI_WORKLOG_DEVICE_TOKEN"
     )
-    foreach ($key in $requiredKeys) {
-        $value = [Environment]::GetEnvironmentVariable($key, "Process")
-        if ([string]::IsNullOrWhiteSpace($value)) {
-            throw "Missing required configuration"
+    if (-not $LocalOnly) {
+        foreach ($key in $requiredKeys) {
+            $value = [Environment]::GetEnvironmentVariable($key, "Process")
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                throw "Missing required configuration"
+            }
         }
     }
-    $protocolVersion = $env:AI_WORKLOG_PROTOCOL_VERSION
-    if ([string]::IsNullOrWhiteSpace($protocolVersion)) {
-        $protocolVersion = "2"
-        [Environment]::SetEnvironmentVariable(
-            "AI_WORKLOG_PROTOCOL_VERSION", $protocolVersion, "Process"
-        )
-    }
-    if (@("1", "2") -notcontains $protocolVersion) {
-        throw "Invalid collector protocol version"
+    if (-not $LocalOnly) {
+        $protocolVersion = $env:AI_WORKLOG_PROTOCOL_VERSION
+        if ([string]::IsNullOrWhiteSpace($protocolVersion)) {
+            $protocolVersion = "1"
+            [Environment]::SetEnvironmentVariable(
+                "AI_WORKLOG_PROTOCOL_VERSION", $protocolVersion, "Process"
+            )
+        }
+        if ($protocolVersion -ne "1") {
+            throw "Invalid collector protocol version"
+        }
     }
     $absolutePathPattern = '^(?:[A-Za-z]:[\\/]|\\\\)'
     $pathKeys = @(
@@ -219,44 +227,25 @@ function Assert-RequiredConfig {
             throw "Collector paths must be absolute"
         }
     }
-    if ($protocolVersion -eq "1") {
-        foreach ($key in @(
-            "CODEX_SOURCE_INSTANCE_ID", "CODEX_SOURCE_PATH",
-            "CLAUDE_CODE_SOURCE_INSTANCE_ID", "CLAUDE_CODE_SOURCE_PATH"
-        )) {
-            if ([string]::IsNullOrWhiteSpace(
-                [Environment]::GetEnvironmentVariable($key, "Process")
-            )) {
-                throw "Missing legacy source configuration"
-            }
+    if (-not $LocalOnly) {
+        $syncUri = [Uri]::new($env:AI_WORKLOG_SYNC_URL, [UriKind]::Absolute)
+        $insecureLanSetting = $env:AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP
+        if ([string]::IsNullOrWhiteSpace($insecureLanSetting)) {
+            $insecureLanSetting = "false"
         }
-        if (-not (Test-Path -LiteralPath $env:CODEX_SOURCE_PATH) -or
-            -not (Test-Path -LiteralPath $env:CLAUDE_CODE_SOURCE_PATH)) {
-            throw "Missing legacy source path"
+        if (@("true", "false") -notcontains $insecureLanSetting.ToLowerInvariant()) {
+            throw "Invalid private-LAN HTTP setting"
         }
-        $sameSourceInstance = $env:CODEX_SOURCE_INSTANCE_ID -eq $env:CLAUDE_CODE_SOURCE_INSTANCE_ID
-        $sameSourcePath = $env:CODEX_SOURCE_PATH -ieq $env:CLAUDE_CODE_SOURCE_PATH
-        if ($sameSourceInstance -or $sameSourcePath) {
-            throw "Legacy source identities and paths must be distinct"
+        $localHttp = $syncUri.Scheme -eq "http" -and
+            (@("localhost", "127.0.0.1", "::1") -contains $syncUri.Host)
+        $privateLanHttp = $syncUri.Scheme -eq "http" -and
+            $insecureLanSetting.ToLowerInvariant() -eq "true" -and
+            (Test-PrivateIPv4 $syncUri.Host)
+        $secureEndpoint = $syncUri.Scheme -eq "https" -or $localHttp -or $privateLanHttp
+        $hasEmbeddedCredentials = -not [string]::IsNullOrEmpty($syncUri.UserInfo)
+        if (-not $secureEndpoint -or $hasEmbeddedCredentials) {
+            throw "Invalid sync endpoint"
         }
-    }
-    $syncUri = [Uri]::new($env:AI_WORKLOG_SYNC_URL, [UriKind]::Absolute)
-    $insecureLanSetting = $env:AI_WORKLOG_ALLOW_INSECURE_LAN_HTTP
-    if ([string]::IsNullOrWhiteSpace($insecureLanSetting)) {
-        $insecureLanSetting = "false"
-    }
-    if (@("true", "false") -notcontains $insecureLanSetting.ToLowerInvariant()) {
-        throw "Invalid private-LAN HTTP setting"
-    }
-    $localHttp = $syncUri.Scheme -eq "http" -and
-        (@("localhost", "127.0.0.1", "::1") -contains $syncUri.Host)
-    $privateLanHttp = $syncUri.Scheme -eq "http" -and
-        $insecureLanSetting.ToLowerInvariant() -eq "true" -and
-        (Test-PrivateIPv4 $syncUri.Host)
-    $secureEndpoint = $syncUri.Scheme -eq "https" -or $localHttp -or $privateLanHttp
-    $hasEmbeddedCredentials = -not [string]::IsNullOrEmpty($syncUri.UserInfo)
-    if (-not $secureEndpoint -or $hasEmbeddedCredentials) {
-        throw "Invalid sync endpoint"
     }
 }
 
@@ -277,8 +266,8 @@ function Invoke-CollectorPhase {
         [Parameter(Mandatory = $true)][string]$NodeBinary,
         [Parameter(Mandatory = $true)][string]$TsxCli,
         [Parameter(Mandatory = $true)][string]$CollectorCli,
-        [Parameter(Mandatory = $true)][ValidateSet("prepare", "sync")][string]$Command,
-        [Parameter(Mandatory = $true)][ValidateSet("prepare-codex", "prepare-claude-code", "prepare-v2-codex", "prepare-v2-claude-code", "prepare-v2-zcode", "prepare-v2-dsh", "sync")][string]$LogPhase,
+        [Parameter(Mandatory = $true)][ValidateSet("prepare", "sync", "quarantine-legacy", "status")][string]$Command,
+        [Parameter(Mandatory = $true)][ValidateSet("prepare-prompts", "sync", "quarantine-legacy", "status")][string]$LogPhase,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SourceType
     )
 
@@ -290,8 +279,18 @@ function Invoke-CollectorPhase {
     } else {
         [Environment]::SetEnvironmentVariable("AI_WORKLOG_SOURCE_TYPE", $SourceType, "Process")
     }
-    & $NodeBinary $TsxCli $CollectorCli $Command *> $null
+    $collectorOutput = @()
+    if (@("quarantine-legacy", "status") -contains $Command) {
+        $collectorOutput = & $NodeBinary $TsxCli $CollectorCli $Command 2> $null
+    } else {
+        & $NodeBinary $TsxCli $CollectorCli $Command *> $null
+    }
     if ($LASTEXITCODE -eq 0) {
+        if (@("quarantine-legacy", "status") -contains $Command) {
+            foreach ($line in $collectorOutput) {
+                [Console]::Out.WriteLine([string]$line)
+            }
+        }
         Write-SafeEvent -Phase $LogPhase -Status "ok"
         return $true
     }
@@ -301,7 +300,8 @@ function Invoke-CollectorPhase {
 
 function Invoke-ScheduledCollector {
     Import-CollectorConfig $ConfigPath
-    Assert-RequiredConfig
+    $localOperation = $QuarantineLegacy -or $Status
+    Assert-RequiredConfig -LocalOnly:$localOperation
     $nodeBinary = Resolve-NodeBinary
     $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..\..")).Path
     $tsxCli = Join-Path $projectRoot "node_modules\tsx\dist\cli.mjs"
@@ -312,11 +312,35 @@ function Invoke-ScheduledCollector {
     }
 
     if ($DryRun) {
+        if ($QuarantineLegacy -or $Status) {
+            throw "Local operation cannot be combined with DryRun"
+        }
         Write-SafeEvent -Phase "validation" -Status "dry-run" -Persist $false
         return 0
     }
     if ($ValidateOnly) {
+        if ($QuarantineLegacy -or $Status) {
+            throw "Local operation cannot be combined with ValidateOnly"
+        }
         Write-SafeEvent -Phase "validation" -Status "ok" -Persist $false
+        return 0
+    }
+
+    if ($QuarantineLegacy) {
+        Write-SafeEvent -Phase "quarantine-legacy" -Status "started"
+        if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "quarantine-legacy" -LogPhase "quarantine-legacy" -SourceType "")) {
+            return 1
+        }
+        Write-SafeEvent -Phase "quarantine-legacy" -Status "completed"
+        return 0
+    }
+
+    if ($Status) {
+        Write-SafeEvent -Phase "status" -Status "started"
+        if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "status" -LogPhase "status" -SourceType "")) {
+            return 1
+        }
+        Write-SafeEvent -Phase "status" -Status "completed"
         return 0
     }
 
@@ -335,26 +359,8 @@ function Invoke-ScheduledCollector {
 
         Write-SafeEvent -Phase "schedule" -Status "started"
         $scheduleFailed = $false
-        if ($env:AI_WORKLOG_PROTOCOL_VERSION -eq "1") {
-            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-codex" -SourceType "CODEX")) {
-                $scheduleFailed = $true
-            }
-            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-claude-code" -SourceType "CLAUDE_CODE")) {
-                $scheduleFailed = $true
-            }
-        } else {
-            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-v2-codex" -SourceType "CODEX")) {
-                $scheduleFailed = $true
-            }
-            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-v2-claude-code" -SourceType "CLAUDE_CODE")) {
-                $scheduleFailed = $true
-            }
-            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-v2-zcode" -SourceType "ZCODE")) {
-                $scheduleFailed = $true
-            }
-            if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-v2-dsh" -SourceType "DSH")) {
-                $scheduleFailed = $true
-            }
+        if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "prepare" -LogPhase "prepare-prompts" -SourceType "")) {
+            $scheduleFailed = $true
         }
         if (-not (Invoke-CollectorPhase -NodeBinary $nodeBinary -TsxCli $tsxCli -CollectorCli $collectorCli -Command "sync" -LogPhase "sync" -SourceType "")) {
             $scheduleFailed = $true

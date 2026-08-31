@@ -91,7 +91,7 @@ export function SyncView() {
       />
       {partial ? <PartialNotice>部分设备离线或最近运行未完全成功，其他设备的数据仍可正常浏览。</PartialNotice> : null}
 
-      <Surface className="sync-callout" description="采集器只读本机记录；v2 先上传来源暴露的未脱敏事件，再断点续传原始载荷与附件。" title="立即同步" >
+      <Surface className="sync-callout" description="采集器只读本机记录；仅上传完整、不脱敏的用户 Prompt。" title="立即同步" >
         <div className="surface__body sync-callout__body" id="run-now">
           <div><strong>在对应设备执行采集器同步</strong><p className="muted">当前中心端展示同步状态；设备端使用 <code>collector sync</code> 发起上传。</p></div>
           <button className="button button--secondary" onClick={reload} type="button"><Icon name="sync" />检查最新结果</button>

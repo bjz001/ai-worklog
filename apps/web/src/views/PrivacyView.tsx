@@ -29,13 +29,13 @@ export function PrivacyView() {
     partial: needsAttention
   });
 
-  if (state === "loading") return <><PageHeader title="数据与隐私" description="查看原始轨迹、保留与删除状态" /><LoadingState rows={5} /></>;
-  if (state === "error" && error) return <><PageHeader title="数据与隐私" description="查看原始轨迹、保留与删除状态" /><ErrorState error={error} onRetry={reload} /></>;
-  if (state === "empty" || !privacy) return <><PageHeader title="数据与隐私" description="查看原始轨迹、保留与删除状态" /><EmptyState description="隐私配置尚未初始化，请稍后刷新或检查中心服务。" icon="shield" title="暂无隐私配置" /></>;
+  if (state === "loading") return <><PageHeader title="数据与隐私" description="查看 Prompt 原文、保留与删除状态" /><LoadingState rows={5} /></>;
+  if (state === "error" && error) return <><PageHeader title="数据与隐私" description="查看 Prompt 原文、保留与删除状态" /><ErrorState error={error} onRetry={reload} /></>;
+  if (state === "empty" || !privacy) return <><PageHeader title="数据与隐私" description="查看 Prompt 原文、保留与删除状态" /><EmptyState description="隐私配置尚未初始化，请稍后刷新或检查中心服务。" icon="shield" title="暂无隐私配置" /></>;
 
   return (
     <>
-      <PageHeader description="v2 保存来源实际暴露的未脱敏完整轨迹；设备 Token 和 LLM API Key 仍独立保护" title="数据与隐私" />
+      <PageHeader description="仅保存四类 Agent 的完整用户 Prompt；设备 Token 和 LLM API Key 仍独立保护" title="数据与隐私" />
       {needsAttention ? (
         <PartialNotice>
           {`${privacy.pendingDeletionCount} 项删除任务仍在处理中。`}
@@ -44,8 +44,8 @@ export function PrivacyView() {
 
       <Surface className="surface--primary" title="隐私概览" description="当前中心端数据处理边界">
         <div className="surface__body metrics">
-          <Metric label="内容协议" value={privacy.redactionVersion} helper="v1 保持脱敏校验，v2 不做脱敏" />
-          <Metric label="数据保留" value={privacy.retentionDays === null ? "长期保留" : `${formatNumber(privacy.retentionDays)} 天`} helper="完整 Blob 与轨迹长期保留" />
+          <Metric label="内容协议" value={privacy.redactionVersion} helper="仅保存完整 Prompt，不采集上下文、助手或工具内容" />
+          <Metric label="数据保留" value={privacy.retentionDays === null ? "长期保留" : `${formatNumber(privacy.retentionDays)} 天`} helper="Prompt 正文长期保留" />
           <Metric label="待删除" value={formatNumber(privacy.pendingDeletionCount)} helper="包含派生数据清理" />
         </div>
       </Surface>
@@ -58,7 +58,7 @@ export function PrivacyView() {
               <StatusChip tone="success" icon={<Icon name="check" />}>已启用</StatusChip>
             </div>
             <div className="simple-row">
-              <div className="device-name"><span className="device-icon"><Icon name="code" /></span><div className="simple-row__copy"><strong>v2 原始轨迹</strong><span>system/context/reasoning/工具等正文不脱敏、不截断、不正文加密</span></div></div>
+              <div className="device-name"><span className="device-icon"><Icon name="code" /></span><div className="simple-row__copy"><strong>Prompt-only 原文</strong><span>仅保存完整用户 Prompt；上下文、助手、推理、工具和转录不采集</span></div></div>
               <StatusChip tone="warning" icon={<Icon name="warning" />}>{privacy.rawContentStored ? "完整保存" : "未开启"}</StatusChip>
             </div>
             <div className="simple-row">
@@ -72,7 +72,7 @@ export function PrivacyView() {
           <div className="surface__body stack">
             <div className="privacy-action">
               <span className="privacy-action__icon"><Icon name="download" /></span>
-              <div><strong>导出原始轨迹</strong><p className="muted">{privacy.exportReady ? "当前数据已经可以生成导出包。" : "导出服务正在准备，请稍后再试。"}</p></div>
+              <div><strong>导出 Prompt 原文</strong><p className="muted">{privacy.exportReady ? "当前数据已经可以生成导出包。" : "导出服务正在准备，请稍后再试。"}</p></div>
               <button className="button button--secondary" disabled type="button">导出</button>
             </div>
             <div className="privacy-action privacy-action--danger">

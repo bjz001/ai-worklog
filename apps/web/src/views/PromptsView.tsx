@@ -93,6 +93,8 @@ export function PromptsView() {
           <option value="">全部来源</option>
           <option value="CODEX">Codex</option>
           <option value="CLAUDE_CODE">Claude Code</option>
+          <option value="ZCODE">ZCode</option>
+          <option value="DSH">DSH</option>
         </select>
         <label className="sr-only" htmlFor="prompt-date">工作日期</label>
         <input className="select" id="prompt-date" onChange={(event) => { setPage(1); setDate(event.target.value); }} type="date" value={date} />

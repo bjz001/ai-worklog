@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+export const AgentSourceTypeSchema = z.enum([
+  "CODEX",
+  "CLAUDE_CODE",
+  "ZCODE",
+  "DSH"
+]);
+
+export const MAX_SYNC_EVENT_CONTENT_BYTES = 1_500_000;
+
 export const MAX_SYNC_BATCH_BODY_BYTES = 2 * 1024 * 1024;
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -66,7 +75,7 @@ export const SyncEventSchema = z
     replyToEventId: Sha256Schema.nullable().optional(),
     occurredAt: DateTimeSchema,
     sourceTimeZone: z.string().min(1).max(64),
-    sanitizedContent: z.string().min(1).max(131_072),
+    sanitizedContent: z.string().min(1).max(MAX_SYNC_EVENT_CONTENT_BYTES),
     contentHash: Sha256Schema,
     redactionVersion: z.string().min(1).max(32),
     projectHint: ProjectHintSchema.optional(),
@@ -104,7 +113,7 @@ export const SyncBatchRequestSchema = z
     createdAt: DateTimeSchema,
     source: z
       .object({
-        type: z.enum(["CODEX", "CLAUDE_CODE"]),
+        type: AgentSourceTypeSchema,
         instanceId: z.string().min(1).max(128),
         parserVersion: z.string().min(1).max(64)
       })
@@ -145,13 +154,6 @@ export type ApiError = z.infer<typeof ApiErrorSchema>;
 
 export const MAX_BLOB_CHUNK_BYTES = 1024 * 1024;
 export const MAX_AGENT_SYNC_RECORDS = 1_000;
-
-export const AgentSourceTypeSchema = z.enum([
-  "CODEX",
-  "CLAUDE_CODE",
-  "ZCODE",
-  "DSH"
-]);
 
 export const AgentEventKindSchema = z.enum([
   "SYSTEM",
@@ -940,7 +942,7 @@ export const PromptViewSchema = z.object({
   projectName: z.string(),
   deviceId: z.string(),
   deviceName: z.string(),
-  sourceType: z.enum(["CODEX", "CLAUDE_CODE"]),
+  sourceType: AgentSourceTypeSchema,
   occurredAt: z.string(),
   workDate: z.string(),
   tags: z.array(z.string()),

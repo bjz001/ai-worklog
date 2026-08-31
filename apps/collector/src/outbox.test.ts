@@ -259,4 +259,34 @@ describe("Outbox", () => {
       )
     ).toBe(true);
   });
+
+  it("quarantines pending non-v1 batches and blobs without deleting their source files", () => {
+    const directory = mkdtempSync(join(tmpdir(), "collector-outbox-quarantine-"));
+    const databasePath = join(directory, "collector.sqlite");
+    const blobPath = join(directory, "legacy-attachment.txt");
+    const blobContent = Buffer.from("legacy attachment");
+    writeFileSync(blobPath, blobContent);
+    const outbox = new Outbox(databasePath);
+    openOutboxes.push(outbox);
+    const legacyPayload = JSON.stringify({ protocolVersion: 2, events: [{ kind: "RUN" }] });
+
+    outbox.enqueue({
+      batchId: "b".repeat(64),
+      createdAt: "2026-08-31T00:00:00.000Z",
+      payloadJson: legacyPayload,
+      payloadSha256: sha256Hex(legacyPayload)
+    });
+    outbox.enqueueBlob({
+      sha256: sha256Hex(blobContent),
+      localPath: blobPath,
+      byteLength: blobContent.byteLength,
+      mediaType: "text/plain",
+      filename: "legacy-attachment.txt"
+    });
+
+    expect(outbox.quarantineLegacyPending()).toEqual({ batches: 1, blobs: 1 });
+    expect(outbox.status()).toEqual({ pending: 0, acked: 0, total: 0 });
+    expect(outbox.pendingBlobCount()).toBe(0);
+    expect(readFileSync(blobPath)).toEqual(blobContent);
+  });
 });

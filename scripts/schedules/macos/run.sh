@@ -129,24 +129,14 @@ REQUIRED_KEYS=(
 for key in "${REQUIRED_KEYS[@]}"; do
   [[ "${!key:-}" =~ [^[:space:]] ]] || fail_config
 done
-AI_WORKLOG_PROTOCOL_VERSION="${AI_WORKLOG_PROTOCOL_VERSION:-2}"
-[[ "$AI_WORKLOG_PROTOCOL_VERSION" == "1" || "$AI_WORKLOG_PROTOCOL_VERSION" == "2" ]] || fail_config
+AI_WORKLOG_PROTOCOL_VERSION="${AI_WORKLOG_PROTOCOL_VERSION:-1}"
+[[ "$AI_WORKLOG_PROTOCOL_VERSION" == "1" ]] || fail_config
 for path_key in \
   CODEX_SOURCE_PATH CLAUDE_CODE_SOURCE_PATH ZCODE_SOURCE_PATH ZCODE_HOOK_SPOOL \
   ZCODE_CONFIG_PATH DSH_SOURCE_PATH DSH_HOME COLLECTOR_DB_PATH COLLECTOR_BLOB_ROOT; do
   path_value="${!path_key:-}"
   [[ -z "$path_value" || "$path_value" == /* ]] || fail_config
 done
-if [[ "$AI_WORKLOG_PROTOCOL_VERSION" == "1" ]]; then
-  for key in \
-    CODEX_SOURCE_INSTANCE_ID CODEX_SOURCE_PATH \
-    CLAUDE_CODE_SOURCE_INSTANCE_ID CLAUDE_CODE_SOURCE_PATH; do
-    [[ "${!key:-}" =~ [^[:space:]] ]] || fail_config
-  done
-  [[ -e "$CODEX_SOURCE_PATH" && -e "$CLAUDE_CODE_SOURCE_PATH" ]] || fail_config
-  [[ "$CODEX_SOURCE_INSTANCE_ID" != "$CLAUDE_CODE_SOURCE_INSTANCE_ID" ]] || fail_config
-  [[ "$CODEX_SOURCE_PATH" != "$CLAUDE_CODE_SOURCE_PATH" ]] || fail_config
-fi
 
 sync_authority="${AI_WORKLOG_SYNC_URL#*://}"
 sync_authority="${sync_authority%%/*}"
@@ -244,15 +234,7 @@ run_collector_phase() {
 
 safe_event "schedule" "started"
 schedule_failed=0
-if [[ "$AI_WORKLOG_PROTOCOL_VERSION" == "1" ]]; then
-  run_collector_phase "prepare" "prepare-codex" "CODEX" || schedule_failed=1
-  run_collector_phase "prepare" "prepare-claude-code" "CLAUDE_CODE" || schedule_failed=1
-else
-  run_collector_phase "prepare" "prepare-v2-codex" "CODEX" || schedule_failed=1
-  run_collector_phase "prepare" "prepare-v2-claude-code" "CLAUDE_CODE" || schedule_failed=1
-  run_collector_phase "prepare" "prepare-v2-zcode" "ZCODE" || schedule_failed=1
-  run_collector_phase "prepare" "prepare-v2-dsh" "DSH" || schedule_failed=1
-fi
+run_collector_phase "prepare" "prepare-prompts" "" || schedule_failed=1
 run_collector_phase "sync" "sync" "" || schedule_failed=1
 if ((schedule_failed == 0)); then
   safe_event "schedule" "completed"

@@ -32,6 +32,8 @@ describe("status and source presentation", () => {
   it("provides human-readable source labels", () => {
     expect(formatSource("CLAUDE_CODE")).toBe("Claude Code");
     expect(formatSource("CODEX")).toBe("Codex");
+    expect(formatSource("ZCODE")).toBe("ZCode");
+    expect(formatSource("DSH")).toBe("DSH");
   });
 });
 

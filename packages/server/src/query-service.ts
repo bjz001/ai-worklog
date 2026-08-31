@@ -1,4 +1,5 @@
 import type {
+  AgentSourceType,
   CalendarDayView,
   CalendarResponse,
   DashboardResponse,
@@ -63,7 +64,7 @@ interface PromptRow extends RowDataPacket {
   project_name: string | null;
   device_id: string;
   device_name: string;
-  source_type: "CODEX" | "CLAUDE_CODE";
+  source_type: AgentSourceType;
   occurred_at: Date;
   is_favorite: number | boolean;
 }
@@ -838,7 +839,7 @@ export function getPrivacyResponse(): PrivacyResponse {
   return {
     data: {
       retentionDays: null,
-      redactionVersion: "v1 core-v1 / v2 RAW",
+      redactionVersion: "RAW_V1 · Prompt-only",
       rawContentStored: true,
       exportReady: false,
       pendingDeletionCount: 0

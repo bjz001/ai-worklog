@@ -1,6 +1,6 @@
 # AI Worklog Collector
 
-采集器以只读方式发现 Codex、Claude Code、Z.ai ZCode 和 DeepSeek Harness（DSH）的本地会话，将规范化事件与来源暴露的原始载荷写入 SQLite Outbox，再幂等同步到中心端。protocol v2 不对 system/context/user/assistant/reasoning/工具正文做脱敏、截断或正文级加密；来源未暴露的内容只记录 `NOT_EXPOSED`，不推测补全。设备 Token 仅从环境读取，不进入轨迹、Outbox 载荷或标准输出。
+采集器以只读方式发现 Codex、Claude Code、Z.ai ZCode 和 DeepSeek Harness（DSH）的本地会话，只将完整用户 Prompt 写入 SQLite Outbox，再幂等同步到中心端。Prompt 正文不脱敏；上下文、助手回复、推理、工具调用、转录和附件均不采集。设备 Token 仅从环境读取，不进入 Outbox 载荷或标准输出。
 
 ## 命令
 
@@ -10,16 +10,19 @@ npm run collector -- prepare --source DSH
 npm run collector -- prepare --force-history
 npm run collector -- sync
 npm run collector -- status
+npm run collector -- quarantine-legacy
 npm run collector -- install-zcode-hook
 npm run collector -- run-fixtures
 ```
 
-`prepare` 在 v2 下默认探测四类来源；`--source CODEX|CLAUDE_CODE|ZCODE|DSH` 只处理指定类型。新记录优先进入 Outbox，历史回补游标在成功 prepare 后推进；`--force-history` 忽略本地指纹游标重扫。
+`prepare` 默认探测四类来源；`--source CODEX|CLAUDE_CODE|ZCODE|DSH` 只处理指定类型。新记录优先进入 Outbox，历史回补游标在成功 prepare 后推进；`--force-history` 忽略本地指纹游标重扫。
+
+`quarantine-legacy` 是从旧版轨迹采集协议升级时使用的一次性本地操作。它在事务中将 pending 的非 v1 批次和所有 pending Blob 移入隔离表，不联网、不删除原始会话文件或 Blob 文件。为防止旧数据误上传，`sync` 在检测到未隔离的旧批次或 pending Blob 时会直接阻断并要求先执行该命令。
 
 ## 通用配置
 
 - `AI_WORKLOG_ACCOUNT_ID`、`AI_WORKLOG_DEVICE_ID`：必填。
-- `AI_WORKLOG_PROTOCOL_VERSION`：默认 `2`。显式设为 `1` 时运行旧 Codex/Claude Code 脱敏协议，用于采集端回退。
+- `AI_WORKLOG_PROTOCOL_VERSION`：默认 `1`；当前只支持 Prompt-only 采集协议。
 - `COLLECTOR_DB_PATH`：SQLite Outbox；默认 `~/.ai-worklog/collector.sqlite`。
 - `COLLECTOR_BLOB_ROOT`：本地内容寻址 Blob 缓存；默认为 Outbox 同目录下的 `blobs`。
 - `AI_WORKLOG_PATH_HMAC_KEY`：推荐设置，用于稳定且不可逆地标识本地项目路径。
@@ -41,13 +44,11 @@ ZCODE_HOOK_SPOOL="$HOME/.ai-worklog/zcode-spool" \
 npm run collector -- install-zcode-hook
 ```
 
-安装器会验证配置类型、备份现有文件，并幂等合并 `SessionStart`、`UserPromptSubmit`、工具前后/失败与 `Stop` Hook；重复执行不会叠加相同 Hook。Hook 先持久化当次事件，再尝试复制临时 `transcript_path`；转录复制失败会记录状态，不丢失 Hook 事件。
+安装器会验证配置类型、备份现有文件，并只幂等合并 `UserPromptSubmit` Hook；重复执行不会叠加相同 Hook。Hook 只持久化当次 Prompt，不读取或复制 `transcript_path`。
 
-## 附件与原始载荷
+## Prompt 与同步
 
-只识别日志中结构化路径和可静态解析的 shell 字面量，不执行命令、变量、glob 或命令替换。仅复制采集时存在的普通文件，记录请求路径、真实路径、时间、字节数、SHA-256 和失败状态。这是采集时快照，不保证还原工具访问当时的历史版本。
-
-JSON 批次上限为 2 MiB；长正文先分为 UTF-8 安全的文本段，原始载荷与文件通过固定 1 MiB 块断点续传。块大小是传输单位，不是文件或会话容量上限。事件批次先同步，Blob 后续补齐；缺失、无权限、磁盘耗尽或中断都不会回滚已入库轨迹。
+JSON 批次上限为 2 MiB；单条 Prompt 遵守协议的内容上限。只保存 Prompt 正文和必要的来源、会话、时间字段，不保存原始载荷、转录或 Blob。
 
 ## 同步
 

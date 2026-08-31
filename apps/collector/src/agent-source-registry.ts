@@ -15,8 +15,12 @@ import {
 import type { AgentSourceType } from "@ai-worklog/contracts";
 import { sha256Hex } from "@ai-worklog/core";
 import type { AgentConnector } from "./agent-connector.js";
+import { AgentPromptConnector } from "./agent-prompt-connector.js";
+import type { PromptConnector } from "./prompt-connector.js";
+import { ClaudeCodeConnector } from "./claude-connector.js";
 import { ClaudeCodeAgentConnector } from "./claude-agent-connector.js";
 import { CodexAgentConnector } from "./codex-agent-connector.js";
+import { CodexConnector } from "./codex-connector.js";
 import { DshAgentConnector } from "./dsh-agent-connector.js";
 import { ZCodeAgentConnector } from "./zcode-agent-connector.js";
 
@@ -28,6 +32,11 @@ export interface AgentSourceCandidate {
 
 export interface AgentConnectorRegistryEntry {
   connector: AgentConnector;
+  candidates: AgentSourceCandidate[];
+}
+
+export interface PromptConnectorRegistryEntry {
+  connector: PromptConnector;
   candidates: AgentSourceCandidate[];
 }
 
@@ -262,6 +271,105 @@ export async function createAgentConnectorRegistry(options: {
     if (candidates.length > 0) {
       registry.push({ connector: specification.connector, candidates });
     }
+  }
+  return registry;
+}
+
+export async function createPromptConnectorRegistry(options: {
+  env: Record<string, string | undefined>;
+  accountId: string;
+  deviceId: string;
+  selectedSource?: AgentSourceType;
+}): Promise<PromptConnectorRegistryEntry[]> {
+  const shared = {
+    accountId: options.accountId,
+    deviceId: options.deviceId,
+    pathHmacKey: options.env.AI_WORKLOG_PATH_HMAC_KEY
+  };
+  const specifications: Array<{
+    type: AgentSourceType;
+    connector: PromptConnector;
+    discover: () => Promise<AgentSourceCandidate[]>;
+  }> = [
+    {
+      type: "CODEX",
+      connector: new CodexConnector({
+        ...shared,
+        captureMode: "raw-prompts",
+        sourceInstanceId: instanceId(
+          options.env,
+          "CODEX_SOURCE_INSTANCE_ID",
+          options.deviceId,
+          "CODEX"
+        )
+      }),
+      discover: () => jsonlCandidates(
+        options.env.CODEX_SOURCE_PATH?.trim() || join(homedir(), ".codex", "sessions")
+      )
+    },
+    {
+      type: "CLAUDE_CODE",
+      connector: new ClaudeCodeConnector({
+        ...shared,
+        captureMode: "raw-prompts",
+        sourceInstanceId: instanceId(
+          options.env,
+          "CLAUDE_CODE_SOURCE_INSTANCE_ID",
+          options.deviceId,
+          "CLAUDE_CODE"
+        )
+      }),
+      discover: () => jsonlCandidates(
+        options.env.CLAUDE_CODE_SOURCE_PATH?.trim() || join(homedir(), ".claude", "projects")
+      )
+    },
+    {
+      type: "ZCODE",
+      connector: new AgentPromptConnector({
+        connector: new ZCodeAgentConnector({
+          ...shared,
+          sourceInstanceId: instanceId(
+            options.env,
+            "ZCODE_SOURCE_INSTANCE_ID",
+            options.deviceId,
+            "ZCODE"
+          )
+        })
+      }),
+      discover: () => jsonlCandidates(
+        options.env.ZCODE_HOOK_SPOOL?.trim() ||
+          options.env.ZCODE_SOURCE_PATH?.trim() ||
+          join(homedir(), ".ai-worklog", "zcode-spool"),
+        "events.jsonl"
+      )
+    },
+    {
+      type: "DSH",
+      connector: new AgentPromptConnector({
+        connector: new DshAgentConnector({
+          ...shared,
+          sourceInstanceId: instanceId(
+            options.env,
+            "DSH_SOURCE_INSTANCE_ID",
+            options.deviceId,
+            "DSH"
+          )
+        })
+      }),
+      discover: () => dshCandidates(
+        options.env.DSH_SOURCE_PATH?.trim() ||
+          options.env.DSH_HOME?.trim() ||
+          join(homedir(), ".dsh")
+      )
+    }
+  ];
+  const registry: PromptConnectorRegistryEntry[] = [];
+  for (const specification of specifications) {
+    if (options.selectedSource && specification.type !== options.selectedSource) {
+      continue;
+    }
+    const candidates = await specification.discover();
+    if (candidates.length > 0) registry.push({ connector: specification.connector, candidates });
   }
   return registry;
 }

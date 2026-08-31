@@ -118,7 +118,10 @@ export function validateSanitizedEvents(events: readonly SyncEvent[]): void {
     if (sha256Hex(event.sanitizedContent) !== event.contentHash) {
       throw new UnsafeEventContentError("digest mismatch");
     }
-    if (redactSensitiveText(event.sanitizedContent) !== event.sanitizedContent) {
+    if (
+      event.redactionVersion !== "RAW_V1" &&
+      redactSensitiveText(event.sanitizedContent) !== event.sanitizedContent
+    ) {
       throw new UnsafeEventContentError("not fully redacted");
     }
     validateMetadata(event.metadata);

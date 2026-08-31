@@ -11,15 +11,7 @@ import {
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
-const EVENTS = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Stop"
-] as const;
+const EVENTS = ["UserPromptSubmit"] as const;
 
 type JsonObject = Record<string, unknown>;
 
@@ -87,6 +79,12 @@ export async function installZcodeHook(options: {
   const hooks = object(config.hooks);
   const events = object(hooks.events);
   hooks.enabled = true;
+  for (const [event, value] of Object.entries(events)) {
+    if (!Array.isArray(value)) continue;
+    const remaining = value.filter((entry) => !hookMatches(entry, nodePath, args));
+    if (remaining.length === 0) delete events[event];
+    else events[event] = remaining;
+  }
   for (const event of EVENTS) {
     const entries = Array.isArray(events[event]) ? [...events[event]] : [];
     if (!entries.some((entry) => hookMatches(entry, nodePath, args))) {

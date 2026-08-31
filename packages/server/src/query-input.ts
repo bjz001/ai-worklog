@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AgentSourceType } from "@ai-worklog/contracts";
 
 const IsoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -15,7 +16,7 @@ const PromptQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(50),
   q: z.string().trim().max(500).default(""),
   date: z.union([IsoDateSchema, z.literal("")]).default(""),
-  source: z.enum(["CODEX", "CLAUDE_CODE", ""]).default(""),
+  source: z.enum(["CODEX", "CLAUDE_CODE", "ZCODE", "DSH", ""]).default(""),
   projectId: ProjectIdSchema.default("")
 });
 
@@ -24,7 +25,7 @@ export interface PromptQuery {
   pageSize: number;
   q: string;
   date: string;
-  source: "CODEX" | "CLAUDE_CODE" | "";
+  source: AgentSourceType | "";
   projectId: string;
 }
 
