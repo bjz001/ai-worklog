@@ -168,6 +168,7 @@ const LlmSummaryDraftSchema = z.preprocess((value) => {
 
 export interface SummaryEvidence {
   id: string;
+  sourceEvidenceId?: string;
   projectId: string;
   projectName: string;
   deviceId: string;
@@ -317,6 +318,23 @@ interface ModelSummaryInput {
   evidence: ModelEvidence[];
 }
 
+type DailySummaryStatement = { text: string; evidenceIds: string[] };
+
+interface DailyMergeCandidate {
+  highlights: DailySummaryStatement[];
+  projectProgress: DailySummaryStatement[];
+  decisions: DailySummaryStatement[];
+  blockers: DailySummaryStatement[];
+  nextActions: DailySummaryStatement[];
+}
+
+interface ModelDailyMergeInput {
+  workDate: string;
+  timeZone: string;
+  coverage: ModelSummaryInput["coverage"];
+  candidates: DailyMergeCandidate[];
+}
+
 interface ModelPeriodSummaryInput {
   periodType: SummaryPeriodType;
   periodStart: string;
@@ -354,6 +372,46 @@ function utf8Excerpt(value: string, maxBytes: number): BoundedText {
   };
 }
 
+function utf8Chunks(value: string, maxBytes: number): string[] {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length === 0) return [""];
+  const chunks: string[] = [];
+  let current = "";
+  for (const character of Array.from(normalized)) {
+    const candidate = `${current}${character}`;
+    if (
+      current.length > 0 &&
+      Buffer.byteLength(candidate, "utf8") > maxBytes
+    ) {
+      chunks.push(current);
+      current = character;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+function expandDailyEvidence(
+  evidence: readonly SummaryEvidence[]
+): SummaryEvidence[] {
+  return evidence.flatMap((item) => {
+    const promptChunks = utf8Chunks(item.content, MAX_EVIDENCE_TEXT_BYTES);
+    const resultChunks = item.result
+      ? utf8Chunks(item.result, MAX_EVIDENCE_TEXT_BYTES)
+      : [null];
+    const fragmentCount = Math.max(promptChunks.length, resultChunks.length);
+    return Array.from({ length: fragmentCount }, (_, index) => ({
+      ...item,
+      id: `${item.id}#${index + 1}`,
+      sourceEvidenceId: item.id,
+      content: promptChunks[index] ?? "",
+      result: resultChunks[index] ?? null
+    }));
+  });
+}
+
 function summaryMessages(
   input: ModelSummaryInput,
   instructions: string
@@ -366,6 +424,27 @@ function summaryMessages(
     {
       role: "user",
       content: `Summarize this bounded evidence payload:\n${JSON.stringify(input)}`
+    }
+  ];
+}
+
+function mergeSummaryMessages(
+  input: ModelDailyMergeInput,
+  instructions: string
+): readonly LlmMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        buildSummarySystemPrompt("DAILY", instructions),
+        "[分段合并约束]",
+        "以下是同一天全部证据分段生成的候选结论。合并时去重并保留重要事实，不要添加候选结论之外的事实。",
+        "候选结论中的 evidenceIds 是全局证据引用，最终只能原样引用输入中真实存在的引用。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: `Merge these bounded daily summary candidates:\n${JSON.stringify(input)}`
     }
   ];
 }
@@ -432,6 +511,7 @@ function packEvidence<TBase extends object>(options: {
   input: TBase;
   evidence: readonly SummaryEvidence[];
   messages: (value: TBase & { evidence: ModelEvidence[] }) => readonly LlmMessage[];
+  allowContentTruncation?: boolean;
 }): {
   input: TBase & { evidence: ModelEvidence[] };
   referencedEvidence: Array<{
@@ -439,6 +519,7 @@ function packEvidence<TBase extends object>(options: {
     item: SummaryEvidence;
   }>;
   truncated: boolean;
+  contentTruncated: boolean;
 } {
   const candidates = options.evidence.slice(0, MAX_LLM_EVIDENCE);
   const packed: ModelEvidence[] = [];
@@ -447,6 +528,7 @@ function packEvidence<TBase extends object>(options: {
     item: SummaryEvidence;
   }> = [];
   let truncated = options.evidence.length > candidates.length;
+  let contentTruncated = false;
 
   for (const item of candidates) {
     const reference = `E${String(packed.length + 1).padStart(3, "0")}`;
@@ -464,10 +546,12 @@ function packEvidence<TBase extends object>(options: {
       packed.push(bounded.value);
       referencedEvidence.push({ reference, item });
       truncated ||= bounded.truncated;
+      contentTruncated ||= bounded.truncated;
       continue;
     }
 
     truncated = true;
+    if (options.allowContentTruncation === false) break;
     let low = 64;
     let high = MAX_EVIDENCE_TEXT_BYTES - 1;
     let best: ReturnType<typeof modelEvidence> | null = null;
@@ -500,6 +584,7 @@ function packEvidence<TBase extends object>(options: {
     if (best) {
       packed.push(best.value);
       referencedEvidence.push({ reference, item });
+      contentTruncated ||= best.truncated;
     }
     break;
   }
@@ -522,13 +607,36 @@ function packEvidence<TBase extends object>(options: {
     packed.push(minimal.value);
     referencedEvidence.push({ reference, item });
     truncated = true;
+    contentTruncated = true;
   }
 
   if (packed.length < options.evidence.length) truncated = true;
   return {
     input: { ...options.input, evidence: packed },
     referencedEvidence,
-    truncated
+    truncated,
+    contentTruncated
+  };
+}
+
+function compactDailyStatements(
+  statements: readonly DailySummaryStatement[]
+): DailySummaryStatement[] {
+  return statements.slice(0, 4).map((statement) => ({
+    text: utf8Excerpt(statement.text, 512).text,
+    evidenceIds: statement.evidenceIds.slice(0, 4)
+  }));
+}
+
+function compactDailyDraft(
+  draft: z.infer<typeof LlmSummaryDraftSchema>
+): DailyMergeCandidate {
+  return {
+    highlights: compactDailyStatements(draft.highlights),
+    projectProgress: compactDailyStatements(draft.projectProgress),
+    decisions: compactDailyStatements(draft.decisions),
+    blockers: compactDailyStatements(draft.blockers),
+    nextActions: compactDailyStatements(draft.nextActions)
   };
 }
 
@@ -563,17 +671,109 @@ export async function generateLlmDailySummary(options: {
   const boundedTimeZone = utf8Excerpt(options.timeZone, 128).text;
   const messages = (input: ModelSummaryInput) =>
     summaryMessages(input, options.settings.summaryPrompts.daily);
+  const summaryInput = {
+    workDate: boundedWorkDate,
+    timeZone: boundedTimeZone,
+    coverage: {
+      expectedDeviceCount: options.expectedDeviceIds.length,
+      arrivedDeviceCount: options.arrivedDeviceIds.length,
+      missingDeviceCount: deviceCoverage.missingDeviceIds.length
+    }
+  };
+  const expandedEvidence = expandDailyEvidence(options.evidence);
+
+  if (
+    expandedEvidence.length > MAX_LLM_EVIDENCE ||
+    expandedEvidence.length !== options.evidence.length
+  ) {
+    const globalReferenceById = new Map(
+      options.evidence.map((item, index) => [
+        item.id,
+        `E${String(index + 1).padStart(3, "0")}`
+      ])
+    );
+    const globalIdByReference = new Map(
+      [...globalReferenceById.entries()].map(([id, reference]) => [reference, id])
+    );
+    const candidates: DailyMergeCandidate[] = [];
+    let inputTruncated = false;
+    let offset = 0;
+
+    while (offset < expandedEvidence.length) {
+      const evidenceChunk = expandedEvidence.slice(
+        offset,
+        offset + MAX_LLM_EVIDENCE
+      );
+      const packed = packEvidence({
+        settings: options.settings,
+        input: summaryInput,
+        evidence: evidenceChunk,
+        messages,
+        allowContentTruncation: false
+      });
+      const evidenceByReference = new Map(
+        packed.referencedEvidence.map(({ reference, item }) => [
+          reference,
+          item.sourceEvidenceId ?? item.id
+        ])
+      );
+      const { data: draft } = await requestLlmJson({
+        settings: options.settings,
+        fetcher: options.fetcher,
+        resolver: options.resolver,
+        schema: LlmSummaryDraftSchema,
+        messages: messages(packed.input)
+      });
+      const validatedDraft = mapEvidenceReferences(draft, evidenceByReference);
+      const globalDraft = mapEvidenceReferences(
+        validatedDraft,
+        globalReferenceById
+      );
+      candidates.push(compactDailyDraft(globalDraft));
+      inputTruncated ||= packed.contentTruncated;
+      offset += packed.referencedEvidence.length;
+    }
+
+    const { data: mergedDraft } = await requestLlmJson({
+      settings: options.settings,
+      fetcher: options.fetcher,
+      resolver: options.resolver,
+      schema: LlmSummaryDraftSchema,
+      messages: mergeSummaryMessages(
+        {
+          ...summaryInput,
+          candidates
+        },
+        options.settings.summaryPrompts.daily
+      )
+    });
+    const validatedDraft = mapEvidenceReferences(
+      mergedDraft,
+      globalIdByReference
+    );
+    const truncatedNote = inputTruncated
+      ? ` 为满足模型请求大小限制，本次证据已分段处理，但部分单条内容被截断，覆盖 ${options.evidence.length}/${options.evidence.length} 条。`
+      : ` 已分段处理全部 ${options.evidence.length} 条证据。`;
+    return {
+      workDate: options.workDate,
+      timeZone: options.timeZone,
+      status: deviceCoverage.status === "complete" && !inputTruncated
+        ? "complete"
+        : "partial",
+      inputTruncated,
+      highlights: validatedDraft.highlights,
+      projectProgress: validatedDraft.projectProgress,
+      decisions: validatedDraft.decisions,
+      blockers: validatedDraft.blockers,
+      nextActions: validatedDraft.nextActions,
+      missingDeviceIds: deviceCoverage.missingDeviceIds,
+      completenessNote: `${deviceCoverage.note}${truncatedNote}`
+    };
+  }
+
   const packed = packEvidence({
     settings: options.settings,
-    input: {
-      workDate: boundedWorkDate,
-      timeZone: boundedTimeZone,
-      coverage: {
-        expectedDeviceCount: options.expectedDeviceIds.length,
-        arrivedDeviceCount: options.arrivedDeviceIds.length,
-        missingDeviceCount: deviceCoverage.missingDeviceIds.length
-      }
-    },
+    input: summaryInput,
     evidence: options.evidence,
     messages
   });

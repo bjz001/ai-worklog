@@ -393,7 +393,7 @@ async function refreshDailyInsightsLocked(options: {
     promptInstructions
   );
   const canonicalGeneratorFingerprint = [
-    "llm-summary-v1",
+    "llm-summary-v2",
     llmSettings.provider,
     llmSettings.baseUrl,
     llmSettings.model,

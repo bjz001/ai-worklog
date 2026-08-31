@@ -194,7 +194,64 @@ describe("generateLlmDailySummary", () => {
     expect(result.completenessNote).toBe("已收到全部活跃设备的数据。");
   });
 
-  it("packs Chinese evidence by actual UTF-8 request bytes and reports truncation", async () => {
+  it("summarizes all daily evidence through bounded multi-pass processing", async () => {
+    const largeEvidence = Array.from({ length: 81 }, (_, index) => ({
+      ...evidence[0]!,
+      id: `event-${index + 1}`,
+      contentHash: String(index).padStart(64, "0"),
+      content: `完成事项 ${index + 1}`,
+      result: `结果 ${index + 1}`
+    }));
+    const chunkSizes: number[] = [];
+    const fetcher = vi.fn(async (_input: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as {
+        messages: Array<{ content: string }>;
+      };
+      const userContent = body.messages[1]!.content;
+      const payload = JSON.parse(userContent.split("\n", 2)[1]!);
+      if (Array.isArray(payload.candidates)) {
+        const mergeReference = payload.candidates
+          .flatMap((candidate: Record<string, unknown>) => [
+            ...(Array.isArray(candidate.highlights)
+              ? candidate.highlights
+              : []),
+            ...(Array.isArray(candidate.projectProgress)
+              ? candidate.projectProgress
+              : [])
+          ])
+          .flatMap((statement: Record<string, unknown>) =>
+            Array.isArray(statement.evidenceIds) ? statement.evidenceIds : []
+          )[0] ?? "E001";
+        return completion({
+          highlights: [{ text: "合并全部分段结果。", evidenceIds: [mergeReference] }]
+        });
+      }
+      chunkSizes.push(payload.evidence.length);
+      return completion({
+        highlights: [{ text: "完成分段摘要。", evidenceIds: ["E001"] }]
+      });
+    });
+
+    const result = await generateLlmDailySummary({
+      settings,
+      workDate: "2026-07-15",
+      timeZone: "Asia/Shanghai",
+      expectedDeviceIds: ["mac"],
+      arrivedDeviceIds: ["mac"],
+      evidence: largeEvidence,
+      fetcher,
+      resolver
+    });
+
+    expect(chunkSizes.reduce((total, size) => total + size, 0)).toBe(81);
+    expect(chunkSizes).toEqual([80, 1]);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(result.status).toBe("complete");
+    expect(result.inputTruncated).toBe(false);
+    expect(result.highlights[0]?.evidenceIds).toEqual(["event-1"]);
+  });
+
+  it("packs long Chinese evidence into complete UTF-8 bounded fragments", async () => {
     const chineseEvidence = Array.from({ length: 80 }, (_, index) => ({
       ...evidence[0]!,
       id: `event-${index + 1}`,
@@ -203,6 +260,7 @@ describe("generateLlmDailySummary", () => {
       result: "中文结果".repeat(2_000)
     }));
     let suppliedEvidenceCount = 0;
+    let mergeRequestSeen = false;
     const fetcher = vi.fn(async (_input: string, init: RequestInit) => {
       const serializedBody = String(init.body);
       expect(Buffer.byteLength(serializedBody, "utf8")).toBeLessThanOrEqual(
@@ -211,10 +269,18 @@ describe("generateLlmDailySummary", () => {
       const body = JSON.parse(serializedBody) as {
         messages: Array<{ content: string }>;
       };
-      const userPayload = JSON.parse(
-        body.messages[1]!.content.split("\n", 2)[1]!
-      ) as { evidence: unknown[] };
-      suppliedEvidenceCount = userPayload.evidence.length;
+      const userPayload = JSON.parse(body.messages[1]!.content.split("\n", 2)[1]!) as {
+        evidence?: unknown[];
+        candidates?: unknown[];
+      };
+      if (userPayload.candidates) {
+        mergeRequestSeen = true;
+        return completion({
+          highlights: [{ text: "合并中文证据。", evidenceIds: ["E001"] }]
+        });
+      }
+      const evidence = userPayload.evidence ?? [];
+      suppliedEvidenceCount += evidence.length;
       expect(suppliedEvidenceCount).toBeGreaterThanOrEqual(1);
       return completion({
         highlights: [{ text: "完成摘要。", evidenceIds: ["E001"] }],
@@ -237,10 +303,13 @@ describe("generateLlmDailySummary", () => {
       resolver
     });
 
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(suppliedEvidenceCount).toBeGreaterThanOrEqual(1);
-    expect(result.completenessNote).toContain("截断");
-    expect(result.completenessNote).not.toContain("模型声称");
+    expect(fetcher.mock.calls.length).toBeGreaterThan(2);
+    expect(mergeRequestSeen).toBe(true);
+    expect(suppliedEvidenceCount).toBe(80 * 6);
+    expect(result.status).toBe("complete");
+    expect(result.inputTruncated).toBe(false);
+    expect(result.completenessNote).toContain("全部 80 条证据");
+    expect(result.completenessNote).not.toContain("截断");
   });
 });
 
